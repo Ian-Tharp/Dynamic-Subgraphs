@@ -240,6 +240,69 @@ class FileRecorder:
             )
         return json.loads(chain_path.read_text(encoding="utf-8"))
 
+    def exists(self, run_id: str) -> bool:
+        _validate_run_id(run_id)
+        return (self._root / run_id).is_dir()
+
+    def run_dir(self, run_id: str) -> Path:
+        _validate_run_id(run_id)
+        return self._root / run_id
+
+    def load_output(self, run_id: str) -> dict[str, Any]:
+        _validate_run_id(run_id)
+        output_path = self._root / run_id / "output.json"
+        if not output_path.exists():
+            raise FileNotFoundError(
+                f"No output.json for run_id {run_id!r} at {output_path}"
+            )
+        return json.loads(output_path.read_text(encoding="utf-8"))
+
+    def artifact_path(self, run_id: str, name: str) -> Path:
+        _validate_run_id(run_id)
+        if not name or not all(ch in _SAFE_RUN_ID_CHARS for ch in name):
+            raise ValueError(
+                f"artifact name contains unsafe characters: {name!r}"
+            )
+        return self._root / run_id / "artifacts" / name
+
+    def list_runs(self) -> list[dict[str, Any]]:
+        """Summaries of every recorded run directory (id, status, node count).
+
+        Skips chain directories (those with chain.json but no spec.json).
+        """
+        if not self._root.exists():
+            return []
+        summaries: list[dict[str, Any]] = []
+        for child in sorted(self._root.iterdir()):
+            if not child.is_dir():
+                continue
+            spec_path = child / "spec.json"
+            if not spec_path.exists():
+                continue
+            status = "unknown"
+            output_path = child / "output.json"
+            if output_path.exists():
+                try:
+                    out = json.loads(output_path.read_text(encoding="utf-8"))
+                    if out.get("ok"):
+                        status = "ok"
+                    elif out.get("error"):
+                        status = "failed"
+                    else:
+                        status = "failed" if out.get("errors") else "ok"
+                except (json.JSONDecodeError, OSError):
+                    status = "unknown"
+            node_count = 0
+            try:
+                spec_raw = json.loads(spec_path.read_text(encoding="utf-8"))
+                node_count = len(spec_raw.get("nodes", []))
+            except (json.JSONDecodeError, OSError):
+                node_count = 0
+            summaries.append(
+                {"run_id": child.name, "status": status, "nodes": node_count}
+            )
+        return summaries
+
 
 def _validate_run_id(run_id: str) -> None:
     if not run_id:
