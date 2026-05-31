@@ -24,6 +24,7 @@ from app.api.deps import (
 )
 from app.api.errors import Conflict, NotFound
 from app.api.jobs import Job, JobState
+from app.api.run_config_store import load_run_config, save_run_config
 from app.api.schemas import ReplayRequest, ResumeRequest, RunRequest
 from app.api.serialize import run_links, run_result_payload, run_status_payload
 from app.recording.recorder import _validate_run_id
@@ -46,6 +47,14 @@ def _make_run_worker(ctx: AppContext, config, prompt: str, run_id: str):
     def work(job: Job) -> None:
         job.set_state(JobState.RUNNING)
         result = supervisor.run(prompt, run_id=run_id)
+        # Persist the config this run was created with BEFORE completing the job,
+        # so resume/replay (and a sync caller reading the dir) never race the write.
+        if ctx.recorder.exists(run_id):
+            save_run_config(
+                ctx.recorder.run_dir(run_id),
+                planner=config.planner,
+                model=config.model,
+            )
         spec = result.validated_spec
         if spec is not None and spec.budget is not None:
             job.budget_wall_seconds = getattr(spec.budget, "max_wall_seconds", None)
@@ -213,7 +222,12 @@ def resume_run(
     _validate_run_id(run_id)
     if not ctx.recorder.exists(run_id):
         raise NotFound(f"No run {run_id!r} to resume")
-    config = resolve_run_config(ctx, planner=None, model=None)
+    persisted = load_run_config(ctx.recorder.run_dir(run_id))
+    config = resolve_run_config(
+        ctx,
+        planner=persisted["planner"] if persisted else None,
+        model=persisted["model"] if persisted else None,
+    )
     supervisor = ctx.supervisor_for(config)
     result = supervisor.resume(run_id, event=body.event)
     status_code = 200 if result.status in {"ok", "paused"} else 409
@@ -231,7 +245,12 @@ def replay_run(
     _validate_run_id(run_id)
     if not ctx.recorder.exists(run_id):
         raise NotFound(f"No run {run_id!r} to replay")
-    config = resolve_run_config(ctx, planner=None, model=None)
+    persisted = load_run_config(ctx.recorder.run_dir(run_id))
+    config = resolve_run_config(
+        ctx,
+        planner=persisted["planner"] if persisted else None,
+        model=persisted["model"] if persisted else None,
+    )
     supervisor = ctx.supervisor_for(config)
     result = supervisor.replay(run_id, new_run_id=body.new_run_id)
     status_code = 200 if result.status in {"ok", "paused"} else 409
