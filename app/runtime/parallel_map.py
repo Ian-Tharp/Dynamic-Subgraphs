@@ -1,0 +1,333 @@
+"""Runtime support for `parallel_map` nodes.
+
+A `parallel_map` `NodeSpec` cannot be expressed as a single `NodeRunner`: it
+needs to emit `Send` commands for runtime fan-out and converge across the
+results. The compiler expands one PM `NodeSpec` into three LangGraph nodes:
+
+    <pm>  →  Send fan-out  →  <pm>__pm_worker  ⤵
+                                                <pm>__pm_join  →  (downstream)
+
+- **Dispatcher (`<pm>`)** reads `state.values[over]`, emits one `Send` per
+  item carrying the item + index in the worker's payload. For an empty
+  input list, it routes directly to the joiner with `state.values[output_key] = []`.
+- **Worker (`<pm>__pm_worker`)** invokes the child runner with the current
+  item exposed under `state.values["item"]` (and `args["item"]` for
+  `tool_call` children). It writes its result to a per-index slot key
+  (`<output_key>__<idx>`) so parallel writes don't collide under the
+  `merge_dicts` reducer.
+- **Joiner (`<pm>__pm_join`)** scans the slot keys, orders them by index,
+  and writes `state.values[output_key]` as the assembled list.
+
+Trace events use `node_id = <pm>.id` for both START (from the dispatcher)
+and FINISH (from the joiner) so the parallel_map appears as one logical
+node in the trace, with duration spanning the whole fan-out.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Callable
+from datetime import UTC, datetime
+from time import perf_counter
+from typing import Any
+
+from langgraph.graph import END
+from langgraph.types import Command, Send
+
+from app.models import DynamicRunState, NodeKind, NodeSpec, TraceEvent, TraceEventKind
+from app.runtime.runners import NodeRunner
+
+# Per-Send payload keys (live in state.values for the worker's branch only)
+_PM_ITEM_KEY = "_pm_item"
+_PM_INDEX_KEY = "_pm_index"
+
+# Metadata key prefix the dispatcher uses to stash start time for the joiner
+_PM_START_META_PREFIX = "__pm_started_perf__"
+
+
+def parallel_map_worker_name(pm_id: str) -> str:
+    return f"{pm_id}__pm_worker"
+
+
+def parallel_map_join_name(pm_id: str) -> str:
+    return f"{pm_id}__pm_join"
+
+
+def _slot_prefix(output_key: str) -> str:
+    return f"{output_key}__"
+
+
+def make_parallel_map_dispatcher(
+    node: NodeSpec,
+    *,
+    worker_id: str,
+    join_id: str,
+) -> Callable[[DynamicRunState], Command]:
+    """Build the LangGraph node function for the parallel_map dispatcher."""
+
+    over_key = node.params["over"]
+    output_key = node.outputs[0] if node.outputs else f"{node.id}_results"
+
+    def dispatch(state: DynamicRunState) -> Command:
+        started_at = datetime.now(UTC)
+        started_perf = perf_counter()
+        start_event = TraceEvent(
+            kind=TraceEventKind.NODE_START,
+            timestamp=started_at,
+            node_id=node.id,
+        )
+
+        values = state.get("values", {}) or {}
+        items = values.get(over_key)
+
+        # Upstream `llm_call` nodes return text, so a list emitted by an LLM
+        # arrives here as a JSON-encoded string. Opportunistically decode two
+        # common shapes so parallel_map composes naturally with llm_call
+        # producers:
+        #   1. A bare JSON array: `["a", "b", "c"]`
+        #   2. A single-key object wrapping the list under the same key the
+        #      `over` param names: `{"<over_key>": ["a", "b", "c"]}`
+        if isinstance(items, str):
+            stripped = items.strip()
+            decoded: Any = None
+            if (stripped.startswith("[") and stripped.endswith("]")) or (
+                stripped.startswith("{") and stripped.endswith("}")
+            ):
+                try:
+                    decoded = json.loads(stripped)
+                except (json.JSONDecodeError, ValueError):
+                    decoded = None
+            if isinstance(decoded, list):
+                items = decoded
+            elif isinstance(decoded, dict) and isinstance(
+                decoded.get(over_key), list
+            ):
+                items = decoded[over_key]
+
+        if not isinstance(items, list):
+            return _halt_with_error(
+                node=node,
+                start_event=start_event,
+                started_perf=started_perf,
+                error_type="TypeError",
+                error_message=(
+                    f"parallel_map source key '{over_key}' is not a list "
+                    f"(got {type(items).__name__})"
+                ),
+            )
+
+        base_update: dict[str, Any] = {
+            "events": [start_event.model_dump(mode="json")],
+            "metadata": {f"{_PM_START_META_PREFIX}{node.id}": started_perf},
+        }
+
+        if not items:
+            # Empty input: skip workers, hand an empty list to the joiner.
+            return Command(
+                update={
+                    **base_update,
+                    "values": {output_key: []},
+                },
+                goto=join_id,
+            )
+
+        sends: list[Send] = []
+        for idx, item in enumerate(items):
+            payload_values = {
+                **values,
+                _PM_ITEM_KEY: item,
+                _PM_INDEX_KEY: idx,
+            }
+            payload: DynamicRunState = {
+                "values": payload_values,
+                "metadata": dict(state.get("metadata", {}) or {}),
+            }
+            sends.append(Send(worker_id, payload))
+
+        return Command(update=base_update, goto=sends)
+
+    return dispatch
+
+
+def make_parallel_map_worker(
+    node: NodeSpec,
+    *,
+    child_kind: NodeKind,
+    child_runner: NodeRunner,
+) -> Callable[[DynamicRunState], Any]:
+    """Build the LangGraph node function for one parallel_map worker invocation."""
+
+    output_key = node.outputs[0] if node.outputs else f"{node.id}_results"
+    child_params_template: dict[str, Any] = dict(node.params.get("child_params", {}))
+
+    def worker(state: DynamicRunState) -> Any:
+        values = state.get("values", {}) or {}
+        item = values.get(_PM_ITEM_KEY)
+        idx = values.get(_PM_INDEX_KEY, 0)
+
+        # Build a clean view of state.values for the child runner: strip
+        # internal `_pm_*` keys and expose the current item under "item".
+        child_values = {
+            key: value
+            for key, value in values.items()
+            if not key.startswith("_pm_")
+        }
+        child_values["item"] = item
+        child_state: DynamicRunState = dict(state)
+        child_state["values"] = child_values
+
+        # Inject item into params based on child kind.
+        if child_kind == NodeKind.TOOL_CALL:
+            local_params = {
+                **child_params_template,
+                "args": {
+                    **dict(child_params_template.get("args", {})),
+                    "item": item,
+                },
+            }
+        else:
+            # For llm_call, the runner reads `item` from state.values directly.
+            local_params = dict(child_params_template)
+
+        try:
+            raw = child_runner(child_state, local_params)
+        except Exception as exc:  # noqa: BLE001 - normalize and halt
+            return Command(
+                update={
+                    "errors": [
+                        {
+                            "node_id": node.id,
+                            "message": (
+                                f"parallel_map worker [{idx}] failed: {exc}"
+                            ),
+                            "type": type(exc).__name__,
+                        }
+                    ],
+                },
+                goto=END,
+            )
+
+        if not isinstance(raw, dict):
+            return Command(
+                update={
+                    "errors": [
+                        {
+                            "node_id": node.id,
+                            "message": (
+                                f"parallel_map worker [{idx}] returned non-dict: "
+                                f"{type(raw).__name__}"
+                            ),
+                            "type": "TypeError",
+                        }
+                    ],
+                },
+                goto=END,
+            )
+
+        # Use the runner's `result` key by convention; fall back to whole dict.
+        result = raw["result"] if "result" in raw else raw
+        slot_key = f"{_slot_prefix(output_key)}{idx}"
+        return {"values": {slot_key: result}}
+
+    return worker
+
+
+def make_parallel_map_joiner(
+    node: NodeSpec,
+) -> Callable[[DynamicRunState], dict[str, Any]]:
+    """Build the LangGraph node function that converges parallel results."""
+
+    output_key = node.outputs[0] if node.outputs else f"{node.id}_results"
+    slot_prefix = _slot_prefix(output_key)
+    start_meta_key = f"{_PM_START_META_PREFIX}{node.id}"
+
+    def join(state: DynamicRunState) -> Any:
+        values = state.get("values", {}) or {}
+
+        metadata = state.get("metadata", {}) or {}
+        started_perf = metadata.get(start_meta_key)
+        duration_ms: float
+        if isinstance(started_perf, (int, float)):
+            duration_ms = round((perf_counter() - started_perf) * 1000, 3)
+        else:
+            duration_ms = 0.0
+
+        # If any worker for *this* parallel_map failed, halt the whole graph.
+        # Workers return Command(goto=END) but LangGraph still fires the
+        # static worker->join edge per Send branch, so the join is the only
+        # place we can reliably stop downstream nodes from running.
+        worker_errors = [
+            err
+            for err in state.get("errors", []) or []
+            if isinstance(err, dict) and err.get("node_id") == node.id
+        ]
+        if worker_errors:
+            error_event = TraceEvent(
+                kind=TraceEventKind.NODE_ERROR,
+                node_id=node.id,
+                message=worker_errors[0].get("message", "parallel_map worker failed"),
+                data={"duration_ms": duration_ms},
+            )
+            return Command(
+                update={"events": [error_event.model_dump(mode="json")]},
+                goto=END,
+            )
+
+        slots: dict[int, Any] = {}
+        for key, value in values.items():
+            if not key.startswith(slot_prefix):
+                continue
+            suffix = key[len(slot_prefix):]
+            try:
+                idx = int(suffix)
+            except ValueError:
+                continue
+            slots[idx] = value
+
+        ordered = [slots[i] for i in sorted(slots.keys())]
+
+        finish_event = TraceEvent(
+            kind=TraceEventKind.NODE_FINISH,
+            node_id=node.id,
+            data={"duration_ms": duration_ms},
+        )
+
+        return {
+            "values": {output_key: ordered},
+            "events": [finish_event.model_dump(mode="json")],
+        }
+
+    return join
+
+
+def _halt_with_error(
+    *,
+    node: NodeSpec,
+    start_event: TraceEvent,
+    started_perf: float,
+    error_type: str,
+    error_message: str,
+) -> Command:
+    duration_ms = round((perf_counter() - started_perf) * 1000, 3)
+    error_event = TraceEvent(
+        kind=TraceEventKind.NODE_ERROR,
+        node_id=node.id,
+        message=error_message,
+        data={"duration_ms": duration_ms},
+    )
+    return Command(
+        update={
+            "errors": [
+                {
+                    "node_id": node.id,
+                    "message": error_message,
+                    "type": error_type,
+                }
+            ],
+            "events": [
+                start_event.model_dump(mode="json"),
+                error_event.model_dump(mode="json"),
+            ],
+        },
+        goto=END,
+    )

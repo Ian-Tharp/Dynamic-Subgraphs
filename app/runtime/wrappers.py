@@ -1,0 +1,124 @@
+"""Node wrappers — the executable seam between a NodeSpec and a runner.
+
+A wrapper is the function LangGraph actually calls per node. Its job:
+
+- emit `NODE_START` before invoking the runner;
+- time the runner with `perf_counter`;
+- catch any exception, normalize it into an `errors` entry plus a `NODE_ERROR`
+  trace event, and short-circuit the graph to `END`;
+- on success, map the runner's raw outputs into the node's declared output keys
+  and emit `NODE_FINISH` with the elapsed duration.
+
+Runners stay ignorant of state shape, tracing, and error handling — this
+wrapper is the one place that knows about all three.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
+from time import perf_counter
+from typing import Any
+
+from langgraph.graph import END
+from langgraph.types import Command
+
+from app.models import (
+    DynamicRunState,
+    NodeSpec,
+    TraceEvent,
+    TraceEventKind,
+)
+from app.runtime.runners import NodeRunner
+
+
+def make_node_wrapper(
+    node: NodeSpec,
+    runner: NodeRunner,
+) -> Callable[[DynamicRunState], DynamicRunState | Command]:
+    """Build the LangGraph-callable wrapper for one NodeSpec + runner pair."""
+
+    def _run(state: DynamicRunState) -> DynamicRunState | Command:
+        started_at = datetime.now(UTC)
+        started_perf = perf_counter()
+        started = TraceEvent(
+            kind=TraceEventKind.NODE_START,
+            timestamp=started_at,
+            node_id=node.id,
+        )
+
+        try:
+            raw_outputs = runner(state, node.params)
+            value_updates = map_outputs(node, raw_outputs)
+        except Exception as exc:  # noqa: BLE001 - normalize all runtime failures
+            duration_ms = round((perf_counter() - started_perf) * 1000, 3)
+            failed = TraceEvent(
+                kind=TraceEventKind.NODE_ERROR,
+                node_id=node.id,
+                message=str(exc),
+                data={"duration_ms": duration_ms},
+            )
+            return Command(
+                update={
+                    "errors": [
+                        {
+                            "node_id": node.id,
+                            "message": str(exc),
+                            "type": type(exc).__name__,
+                        }
+                    ],
+                    "events": [
+                        started.model_dump(mode="json"),
+                        failed.model_dump(mode="json"),
+                    ],
+                },
+                goto=END,
+            )
+
+        duration_ms = round((perf_counter() - started_perf) * 1000, 3)
+        finished = TraceEvent(
+            kind=TraceEventKind.NODE_FINISH,
+            node_id=node.id,
+            data={"duration_ms": duration_ms},
+        )
+        return {
+            "values": value_updates,
+            "events": [
+                started.model_dump(mode="json"),
+                finished.model_dump(mode="json"),
+            ],
+        }
+
+    return _run
+
+
+def map_outputs(node: NodeSpec, raw_outputs: Mapping[str, Any]) -> dict[str, Any]:
+    """Map a runner's return dict into the node's declared output keys.
+
+    - If the runner returned every declared output by name, use them directly.
+    - If exactly one output is declared and the runner returned a generic
+      `"result"` key, route that to the declared output.
+    - Otherwise, raise — the runner did not satisfy its contract.
+    """
+
+    if not isinstance(raw_outputs, Mapping):
+        raise TypeError(f"Node '{node.id}' runner must return a mapping")
+
+    if not node.outputs:
+        return {}
+
+    direct = {
+        output_key: raw_outputs[output_key]
+        for output_key in node.outputs
+        if output_key in raw_outputs
+    }
+    if len(direct) == len(node.outputs):
+        return direct
+
+    if len(node.outputs) == 1 and "result" in raw_outputs:
+        return {node.outputs[0]: raw_outputs["result"]}
+
+    missing = ", ".join(key for key in node.outputs if key not in direct)
+    raise ValueError(
+        f"Node '{node.id}' runner did not produce declared output(s): {missing}"
+    )
