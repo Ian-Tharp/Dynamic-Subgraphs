@@ -5,8 +5,16 @@ import json
 import uuid
 from typing import Any
 
+import time
+from collections.abc import Iterator
+
 from fastapi import APIRouter, Depends, Request, Response
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    PlainTextResponse,
+    StreamingResponse,
+)
 
 from app.api.deps import (
     AppContext,
@@ -16,7 +24,7 @@ from app.api.deps import (
 )
 from app.api.errors import Conflict, NotFound
 from app.api.jobs import Job, JobState
-from app.api.schemas import RunRequest
+from app.api.schemas import ReplayRequest, ResumeRequest, RunRequest
 from app.api.serialize import run_links, run_result_payload, run_status_payload
 from app.recording.recorder import _validate_run_id
 
@@ -192,3 +200,74 @@ def get_artifact(request: Request, run_id: str, name: str) -> Response:
     if not path.exists():
         raise NotFound(f"No artifact {name!r} for run {run_id!r}")
     return FileResponse(path)
+
+
+@router.post("/runs/{run_id}/resume")
+def resume_run(
+    request: Request,
+    run_id: str,
+    body: ResumeRequest,
+    _: None = Depends(require_auth),
+) -> Response:
+    ctx = get_context(request)
+    _validate_run_id(run_id)
+    if not ctx.recorder.exists(run_id):
+        raise NotFound(f"No run {run_id!r} to resume")
+    config = resolve_run_config(ctx, planner=None, model=None)
+    supervisor = ctx.supervisor_for(config)
+    result = supervisor.resume(run_id, event=body.event)
+    status_code = 200 if result.status in {"ok", "paused"} else 409
+    return JSONResponse(status_code=status_code, content=run_result_payload(result))
+
+
+@router.post("/runs/{run_id}/replay")
+def replay_run(
+    request: Request,
+    run_id: str,
+    body: ReplayRequest,
+    _: None = Depends(require_auth),
+) -> Response:
+    ctx = get_context(request)
+    _validate_run_id(run_id)
+    if not ctx.recorder.exists(run_id):
+        raise NotFound(f"No run {run_id!r} to replay")
+    config = resolve_run_config(ctx, planner=None, model=None)
+    supervisor = ctx.supervisor_for(config)
+    result = supervisor.replay(run_id, new_run_id=body.new_run_id)
+    status_code = 200 if result.status in {"ok", "paused"} else 409
+    return JSONResponse(status_code=status_code, content=run_result_payload(result))
+
+
+def _sse(event: str, data: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+@router.get("/runs/{run_id}/trace/stream")
+def stream_run(request: Request, run_id: str) -> StreamingResponse:
+    ctx = get_context(request)
+    _validate_run_id(run_id)
+    job = ctx.jobs.get(run_id)
+    if job is None and not ctx.recorder.exists(run_id):
+        raise NotFound(f"No run {run_id!r}")
+
+    def gen() -> Iterator[str]:
+        if job is not None:
+            queue = job.subscribe()
+            while True:
+                msg = queue.get(timeout=ctx.settings.max_sync_seconds)
+                if msg["type"] == "__end__":
+                    break
+                yield _sse("status", {"state": msg["state"]})
+        # final recorded trace, if present
+        trace_path = ctx.recorder.run_dir(run_id) / "trace.jsonl"
+        if trace_path.exists():
+            events = [
+                json.loads(line)
+                for line in trace_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            yield _sse("trace", {"events": events})
+        final_state = job.state.value if job is not None else "ok"
+        yield _sse("done", {"status": final_state, "run_id": run_id})
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
