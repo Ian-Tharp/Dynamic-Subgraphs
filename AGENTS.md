@@ -22,7 +22,7 @@ This repo implements a **governed dynamic graph runtime**: a stable supervisor o
 | `app/runtime/` | Execute compiled graphs; node wrappers |
 | `app/supervisor/` | Durable host graph: plan → validate → run → record |
 | `app/recording/` | Persist runs under `runs/<run_id>/` |
-| `app/api/` | FastAPI (future); thin over supervisor |
+| `app/api/` | FastAPI: thin HTTP surface over the supervisor (runs/chains/registry/health, SSE, resume/replay). See `docs/api.md`. |
 
 ## Rules
 
@@ -40,5 +40,5 @@ This repo implements a **governed dynamic graph runtime**: a stable supervisor o
 3. Recording + replay  
 4. Supervisor graph  
 5. Planner (structured LLM output)  
-6. API `POST /runs`  
+6. API `POST /runs` ✅ (full supervisor surface; see `docs/api.md`)  
 7. Eval / policy gates on side effects  
