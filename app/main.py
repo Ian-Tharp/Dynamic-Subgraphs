@@ -22,9 +22,7 @@ if __name__ == "__main__" and __package__ in (None, ""):
 import argparse
 import os
 import sys
-from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
 from dotenv import load_dotenv
 
@@ -37,48 +35,18 @@ try:
 except (AttributeError, OSError):
     pass
 
+from app.assembly import RunConfig, build_supervisor
 from app.models import (
-    DynamicRunState,
     GraphSpec,
     NodeKind,
     NodeSpec,
 )
 from app.models.graph_spec import EdgeSpec, GraphBudget
 from app.recording import FileRecorder
-from app.runtime import (
-    FileArtifactSink,
-    LangGraphExecutor,
-    NodeRunner,
-    build_grounded_tool_runner,
-    build_openai_llm_runner,
-    build_openai_reduce_runner,
-    build_openai_spawn_subagent_runner,
-    make_emit_artifact_runner,
-)
-from app.supervisor import (
-    Planner,
-    StaticPlanner,
-    Supervisor,
-    SupervisorResult,
-    build_openai_planner,
-)
-
-_LLM_REDUCE_STRATEGIES = {"concat", "merge_dict", "llm_summarize"}
+from app.supervisor import SupervisorResult
 
 DEFAULT_LLM_MODEL = "gpt-5.4-nano"
 DEFAULT_PROMPT = "Compare two evidence sources and recommend one."
-
-
-def mock_llm_runner(
-    state: DynamicRunState,
-    params: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Stand-in for a real LLM call. Echoes instruction and visible upstream keys."""
-
-    instruction = str(params["instruction"])
-    upstream_keys = sorted(state.get("values", {}).keys())
-    suffix = f" [seen: {', '.join(upstream_keys)}]" if upstream_keys else ""
-    return {"result": f"<mock-llm>{instruction}{suffix}</mock-llm>"}
 
 
 def build_demo_spec() -> GraphSpec:
@@ -175,60 +143,6 @@ def render_supervisor_result(result: SupervisorResult) -> None:
     print("=" * 64)
 
 
-def _build_planner(*, use_llm: bool, model: str) -> Planner:
-    if use_llm:
-        if not os.environ.get("OPENAI_API_KEY"):
-            raise SystemExit(
-                "OPENAI_API_KEY is not set. Add it to .env or your environment."
-            )
-        return build_openai_planner(
-            model=model,
-            executable_reduce_strategies=_LLM_REDUCE_STRATEGIES,
-        )
-    return StaticPlanner(build_demo_spec())
-
-
-def _build_llm_call_runner(*, use_llm: bool, model: str) -> NodeRunner:
-    """Pick the runner for llm_call nodes: real model with --llm, mock otherwise."""
-
-    if use_llm:
-        return build_openai_llm_runner(model=model)
-    return mock_llm_runner
-
-
-def _build_reduce_runner(*, use_llm: bool, model: str) -> NodeRunner | None:
-    """Override reduce only when --llm is set; otherwise default deterministic runner."""
-
-    if use_llm:
-        return build_openai_reduce_runner(model=model)
-    return None
-
-
-def _build_spawn_subagent_runner(*, use_llm: bool, model: str) -> NodeRunner | None:
-    """Override spawn_subagent only when --llm is set; otherwise default echo."""
-
-    if use_llm:
-        return build_openai_spawn_subagent_runner(model=model)
-    return None
-
-
-def _build_tool_call_runner(*, use_llm: bool) -> NodeRunner | None:
-    """Use concrete allowlisted tools for LLM-backed demos."""
-
-    if use_llm:
-        return build_grounded_tool_runner()
-    return None
-
-
-def _build_emit_artifact_runner(*, runs_dir: Path) -> NodeRunner:
-    """Persist emitted artifacts to runs/<run_id>/artifacts/<name>.<ext>.
-
-    Wired for both LLM and non-LLM demos — artifacts are useful in either
-    case (they let you inspect what the workflow actually produced).
-    """
-    return make_emit_artifact_runner(FileArtifactSink(root_dir=runs_dir))
-
-
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Dynamic Subgraphs demo")
     parser.add_argument(
@@ -262,50 +176,20 @@ def main() -> None:
 
     runs_dir = Path(__file__).resolve().parents[1] / "runs"
 
-    planner = _build_planner(use_llm=args.llm, model=args.model)
-    llm_call_runner = _build_llm_call_runner(use_llm=args.llm, model=args.model)
-    reduce_runner = _build_reduce_runner(use_llm=args.llm, model=args.model)
-    subagent_runner = _build_spawn_subagent_runner(use_llm=args.llm, model=args.model)
-    tool_runner = _build_tool_call_runner(use_llm=args.llm)
-    emit_runner = _build_emit_artifact_runner(runs_dir=runs_dir)
-
-    runners: dict[NodeKind, NodeRunner] = {
-        NodeKind.LLM_CALL: llm_call_runner,
-        NodeKind.EMIT_ARTIFACT: emit_runner,
-    }
-    if reduce_runner is not None:
-        runners[NodeKind.REDUCE] = reduce_runner
-    if subagent_runner is not None:
-        runners[NodeKind.SPAWN_SUBAGENT] = subagent_runner
-    if tool_runner is not None:
-        runners[NodeKind.TOOL_CALL] = tool_runner
-
-    supervisor = Supervisor(
-        planner=planner,
-        executor=LangGraphExecutor(runners=runners, strict_runners=args.llm),
-        recorder=FileRecorder(root_dir=runs_dir, overwrite=True),
+    config = RunConfig(
+        planner="openai" if args.llm else "mock",
+        model=args.model,
+        strict_runners=args.llm,
     )
+    recorder = FileRecorder(root_dir=runs_dir, overwrite=True)
+    supervisor = build_supervisor(config, recorder=recorder)
 
     planner_label = f"LLMPlanner({args.model})" if args.llm else "StaticPlanner"
     runner_label = f"OpenAILlmRunner({args.model})" if args.llm else "mock_llm_runner"
-    reduce_label = (
-        f"LlmReduceRunner({args.model})" if args.llm else "run_reduce (default)"
-    )
-    subagent_label = (
-        f"OpenAI subagents ({args.model})"
-        if args.llm
-        else "run_spawn_subagent (default echo)"
-    )
-    tool_label = (
-        "grounded allowlisted tools" if args.llm else "run_tool_call (default echo)"
-    )
-    print(f"[demo] planner   = {planner_label}")
-    print(f"[demo] runner    = {runner_label}")
-    print(f"[demo] reduce    = {reduce_label}")
-    print(f"[demo] subagents = {subagent_label}")
-    print(f"[demo] tools     = {tool_label}")
-    print(f"[demo] artifacts = FileArtifactSink({runs_dir})")
-    print(f"[demo] prompt    = {args.prompt!r}")
+    print(f"[demo] planner = {planner_label}")
+    print(f"[demo] runner  = {runner_label}")
+    print(f"[demo] runs    = {runs_dir}")
+    print(f"[demo] prompt  = {args.prompt!r}")
 
     result = supervisor.run(args.prompt, run_id=args.run_id)
     render_supervisor_result(result)
