@@ -177,6 +177,28 @@ def run_emit_artifact(
     }
 
 
+def run_spawn_subgraph(
+    state: DynamicRunState,
+    params: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Placeholder default for `spawn_subgraph` — refuses to run.
+
+    Unlike the other echo runners, there is no meaningful token-free stand-in:
+    spawning a child graph requires a launcher that can plan + compile + execute
+    a fresh GraphSpec. Wire the real one via
+    `build_spawn_subgraph_runner(launcher)` and pass it as
+    `runners={NodeKind.SPAWN_SUBGRAPH: ...}` (the `assembly` module does this).
+    Failing loud here keeps the kind's executable-path invariant satisfied
+    without silently faking nested execution.
+    """
+
+    del state, params
+    raise RuntimeError(
+        "spawn_subgraph has no default runner: wire build_spawn_subgraph_runner"
+        "(launcher) via runners={NodeKind.SPAWN_SUBGRAPH: ...}."
+    )
+
+
 def default_runners() -> dict[NodeKind, NodeRunner]:
     """Echo / placeholder runners for every registry kind that has one.
 
@@ -193,4 +215,5 @@ def default_runners() -> dict[NodeKind, NodeRunner]:
         NodeKind.REDUCE: run_reduce,
         NodeKind.SPAWN_SUBAGENT: run_spawn_subagent,
         NodeKind.EMIT_ARTIFACT: run_emit_artifact,
+        NodeKind.SPAWN_SUBGRAPH: run_spawn_subgraph,
     }

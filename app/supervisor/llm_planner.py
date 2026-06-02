@@ -220,7 +220,11 @@ class LLMPlanner:
         self._executable_kinds = (
             executable_kinds
             if executable_kinds is not None
-            else set(default_runners().keys()) | set(COMPILER_HANDLED_KINDS)
+            else (set(default_runners().keys()) | set(COMPILER_HANDLED_KINDS))
+            # spawn_subgraph is executable + wired, but gated out of the planner's
+            # default vocabulary until child-spend clamping + planner guidance land
+            # (nested-subgraphs slice 4). Pass executable_kinds explicitly to opt in.
+            - {NodeKind.SPAWN_SUBGRAPH}
         )
         self._executable_reduce_strategies = (
             executable_reduce_strategies

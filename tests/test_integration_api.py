@@ -179,3 +179,69 @@ def test_real_chain_with_llm_decider(tmp_path: Path) -> None:
     import json as _json
 
     assert "<mock-llm>" not in _json.dumps(body)
+
+
+def test_real_spawn_subgraph_runs_a_real_child(tmp_path: Path) -> None:
+    """Real-call proof for the spawn_subgraph primitive (nested-subgraphs slice 3).
+
+    A hand-built parent graph whose only node is a spawn_subgraph: it plans and
+    runs a child with the REAL planner + model, on its own envelope one level
+    deeper, and hands the child's produced values back to the parent. The
+    planner is gated from emitting spawn_subgraph itself, so we wire it
+    explicitly — exactly the late-binding `assembly.build_supervisor` uses.
+    """
+    from app.models import GraphSpec, NodeKind, NodeSpec
+    from app.models.graph_spec import EdgeSpec
+    from app.registry import validate_graph_spec
+    from app.runtime import (
+        build_grounded_tool_runner,
+        build_openai_llm_runner,
+        build_openai_reduce_runner,
+    )
+    from app.runtime.executor import LangGraphExecutor
+    from app.runtime.subgraph import build_spawn_subgraph_runner, make_child_launcher
+    from app.supervisor import build_openai_planner
+
+    planner = build_openai_planner(model=MODEL)
+    runners = {
+        NodeKind.LLM_CALL: build_openai_llm_runner(model=MODEL),
+        NodeKind.TOOL_CALL: build_grounded_tool_runner(),
+        NodeKind.REDUCE: build_openai_reduce_runner(model=MODEL),
+    }
+    executor = LangGraphExecutor(runners=runners)
+    runners[NodeKind.SPAWN_SUBGRAPH] = build_spawn_subgraph_runner(
+        make_child_launcher(planner=planner, executor=executor)
+    )
+
+    parent = GraphSpec(
+        graph_id="parent-real",
+        goal="delegate a sub-task to a child graph",
+        nodes=[
+            NodeSpec(
+                id="spawn",
+                kind=NodeKind.SPAWN_SUBGRAPH,
+                outputs=["child_report"],
+                params={
+                    "sub_goal": "List two concrete benefits of SQLite for a small "
+                    "local app, one sentence each.",
+                    "name": "bench",
+                },
+            )
+        ],
+        edges=[
+            EdgeSpec.model_validate({"from": "START", "to": "spawn"}),
+            EdgeSpec.model_validate({"from": "spawn", "to": "END"}),
+        ],
+    )
+    validated = validate_graph_spec(parent)
+    result = executor.execute(executor.compile(validated), run_id="real-parent")
+
+    assert result.ok is True
+    report = result.state["values"]["child_report"]
+
+    import json as _json
+
+    dumped = _json.dumps(report)
+    # The real model produced the child's output — never the mock echo.
+    assert "<mock-llm>" not in dumped
+    assert len(dumped) > 40  # substantive real output, not an empty child

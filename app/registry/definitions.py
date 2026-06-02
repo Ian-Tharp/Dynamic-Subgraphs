@@ -26,6 +26,7 @@ def default_kind_definitions() -> dict[NodeKind, NodeKindDefinition]:
         ParallelMapParams,
         ReduceParams,
         SpawnSubagentParams,
+        SpawnSubgraphParams,
         ToolCallParams,
         WaitForEventParams,
     )
@@ -78,5 +79,13 @@ def default_kind_definitions() -> dict[NodeKind, NodeKindDefinition]:
             description="Write a file, message, or report (explicit side effect).",
             param_model=EmitArtifactParams,
             has_side_effects=True,
+        ),
+        NodeKind.SPAWN_SUBGRAPH: NodeKindDefinition(
+            kind=NodeKind.SPAWN_SUBGRAPH,
+            description="Synthesize and run a bounded child graph for a sub-goal.",
+            param_model=SpawnSubgraphParams,
+            # Conservative floor: a spawned child runs at least one model call.
+            # Precise child-spend roll-up arrives with budget clamping (slice 4).
+            counts_as_llm_call=True,
         ),
     }

@@ -24,6 +24,7 @@ from app.runtime import (
     build_openai_spawn_subagent_runner,
     make_emit_artifact_runner,
 )
+from app.runtime.subgraph import build_spawn_subgraph_runner, make_child_launcher
 from app.supervisor import (
     Planner,
     StaticPlanner,
@@ -102,5 +103,13 @@ def build_supervisor(
         runners=runners,
         checkpointer=checkpointer,
         strict_runners=config.strict_runners,
+    )
+    # Late-bind the spawn_subgraph launcher: a spawn_subgraph node plans + runs a
+    # bounded child graph on this same executor (nested, depth-capped). Assigned
+    # after the executor exists because the launcher closes over it — and because
+    # `runners` is the executor's live dict, the executor picks the entry up, so
+    # a child can itself spawn (bounded by the depth ceiling).
+    runners[NodeKind.SPAWN_SUBGRAPH] = build_spawn_subgraph_runner(
+        make_child_launcher(planner=planner, executor=executor)
     )
     return Supervisor(planner=planner, executor=executor, recorder=recorder)

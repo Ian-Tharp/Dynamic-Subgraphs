@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any
 
+from langgraph.errors import GraphBubbleUp
 from langgraph.graph import END
 from langgraph.types import Command
 
@@ -57,6 +58,11 @@ def make_node_wrapper(
         try:
             raw_outputs = runner(state, node.params)
             value_updates = map_outputs(node, raw_outputs)
+        except GraphBubbleUp:
+            # LangGraph control-flow signals (interrupt/bubble-up) are not
+            # errors — let them propagate so a pause is honored, never
+            # mislabeled as a NODE_ERROR by the generic handler below.
+            raise
         except Exception as exc:  # noqa: BLE001 - normalize all runtime failures
             duration_ms = round((perf_counter() - started_perf) * 1000, 3)
             failed = TraceEvent(

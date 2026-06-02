@@ -59,6 +59,21 @@ class EmitArtifactParams(BaseModel):
     content_key: str = Field(min_length=1)
 
 
+class SpawnSubgraphParams(BaseModel):
+    """Synthesize and run a bounded child graph for a sub-goal.
+
+    `sub_goal` is the natural-language goal the child planner expands into a
+    fresh GraphSpec. `name` identifies the child run deterministically
+    (child run_id = `<parent>__sg_<name>`). `inputs_from` lists parent state
+    value keys to seed into the child's initial inputs. No embedded GraphSpec —
+    the child is planned at runtime, so "plans, not code" holds at both levels.
+    """
+
+    sub_goal: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    inputs_from: list[str] = Field(default_factory=list)
+
+
 PARAM_MODEL_BY_KIND: dict[NodeKind, type[BaseModel]] = {
     NodeKind.LLM_CALL: LlmCallParams,
     NodeKind.TOOL_CALL: ToolCallParams,
@@ -68,4 +83,5 @@ PARAM_MODEL_BY_KIND: dict[NodeKind, type[BaseModel]] = {
     NodeKind.BRANCH: BranchParams,
     NodeKind.WAIT_FOR_EVENT: WaitForEventParams,
     NodeKind.EMIT_ARTIFACT: EmitArtifactParams,
+    NodeKind.SPAWN_SUBGRAPH: SpawnSubgraphParams,
 }
