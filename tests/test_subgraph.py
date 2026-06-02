@@ -9,6 +9,8 @@ Two layers under test:
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app.models import GraphSpec, NodeKind, NodeSpec
@@ -133,6 +135,45 @@ def test_launcher_plans_and_runs_a_child(tmp_path) -> None:
     assert result.values["draft"] == "hi"
     # the ledger from slice 2 is populated on the child run
     assert result.counters["nodes_executed"] == 1
+
+
+def test_launcher_records_child_run_with_lineage(tmp_path) -> None:
+    # A nested child must be a first-class recorded run: its own spec + output
+    # under runs/<child_run_id>/, with parent_run_id + graph_depth in its
+    # metadata so the lineage forest assembles from a root run_id.
+    from app.recording import FileRecorder
+    from app.runtime.executor import LangGraphExecutor
+
+    child = _child_spec(
+        "child",
+        nodes=[NodeSpec(id="step", kind=NodeKind.LLM_CALL, outputs=["draft"],
+                        params={"instruction": "hi"})],
+        edges=[EdgeSpec.model_validate({"from": "START", "to": "step"}),
+               EdgeSpec.model_validate({"from": "step", "to": "END"})],
+    )
+
+    def planner(sub_goal):
+        del sub_goal
+        return child
+
+    def echo(state, params):
+        del state
+        return {"result": params["instruction"]}
+
+    recorder = FileRecorder(tmp_path)
+    executor = LangGraphExecutor(runners={NodeKind.LLM_CALL: echo})
+    launcher = make_child_launcher(planner=planner, executor=executor, recorder=recorder)
+
+    launcher(
+        "any goal", run_id="parent__sg_c", graph_depth=1, parent_run_id="parent",
+        inputs={},
+    )
+
+    child_dir = tmp_path / "parent__sg_c"
+    assert (child_dir / "spec.json").exists()  # child spec persisted (replay foundation)
+    out = json.loads((child_dir / "output.json").read_text(encoding="utf-8"))
+    assert out["metadata"]["parent_run_id"] == "parent"
+    assert out["metadata"]["graph_depth"] == 1
 
 
 def test_launcher_bans_wait_for_event_in_children() -> None:

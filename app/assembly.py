@@ -110,6 +110,6 @@ def build_supervisor(
     # `runners` is the executor's live dict, the executor picks the entry up, so
     # a child can itself spawn (bounded by the depth ceiling).
     runners[NodeKind.SPAWN_SUBGRAPH] = build_spawn_subgraph_runner(
-        make_child_launcher(planner=planner, executor=executor)
+        make_child_launcher(planner=planner, executor=executor, recorder=recorder)
     )
     return Supervisor(planner=planner, executor=executor, recorder=recorder)

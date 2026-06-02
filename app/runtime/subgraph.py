@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
     from app.models import GraphSpec
+    from app.recording import Recorder
     from app.registry import Registry
     from app.runtime.executor import GraphExecutor
 
@@ -142,6 +143,7 @@ def make_child_launcher(
     planner: "Callable[[str], GraphSpec]",
     executor: "GraphExecutor",
     registry: "Registry | None" = None,
+    recorder: "Recorder | None" = None,
 ) -> ChildLauncher:
     """Build a `ChildLauncher` from a planner + executor.
 
@@ -150,6 +152,12 @@ def make_child_launcher(
     its produced values and spend counters come back in the `ChildResult`.
     `wait_for_event` anywhere in the child is refused before compile — nested
     durable pause is a later, larger effort.
+
+    When a `recorder` is given, each child run is persisted as its own run dir
+    (`runs/<child_run_id>/`) — child spec + trace + output, with parent_run_id
+    and graph_depth in its metadata — so a nested run is fully inspectable and
+    its synthesized spec is durable. Recording failures never break the child
+    run (they're swallowed), matching the supervisor's chain-record behavior.
     """
 
     def launch(
@@ -187,6 +195,13 @@ def make_child_launcher(
                 "parent_run_id": parent_run_id,
             },
         )
+        if recorder is not None:
+            try:
+                recorder.record(
+                    spec=validated, result=result, prompt=sub_goal, overwrite=True
+                )
+            except Exception:  # noqa: BLE001 - recording must not break the child run
+                pass
         state = result.state or {}
         return ChildResult(
             values=dict(state.get("values", {}) or {}),

@@ -192,6 +192,7 @@ def test_real_spawn_subgraph_runs_a_real_child(tmp_path: Path) -> None:
     """
     from app.models import GraphSpec, NodeKind, NodeSpec
     from app.models.graph_spec import EdgeSpec
+    from app.recording import FileRecorder
     from app.registry import validate_graph_spec
     from app.runtime import (
         build_grounded_tool_runner,
@@ -203,6 +204,7 @@ def test_real_spawn_subgraph_runs_a_real_child(tmp_path: Path) -> None:
     from app.supervisor import build_openai_planner
 
     planner = build_openai_planner(model=MODEL)
+    recorder = FileRecorder(tmp_path)
     runners = {
         NodeKind.LLM_CALL: build_openai_llm_runner(model=MODEL),
         NodeKind.TOOL_CALL: build_grounded_tool_runner(),
@@ -210,7 +212,7 @@ def test_real_spawn_subgraph_runs_a_real_child(tmp_path: Path) -> None:
     }
     executor = LangGraphExecutor(runners=runners)
     runners[NodeKind.SPAWN_SUBGRAPH] = build_spawn_subgraph_runner(
-        make_child_launcher(planner=planner, executor=executor)
+        make_child_launcher(planner=planner, executor=executor, recorder=recorder)
     )
 
     parent = GraphSpec(
@@ -245,3 +247,11 @@ def test_real_spawn_subgraph_runs_a_real_child(tmp_path: Path) -> None:
     # The real model produced the child's output — never the mock echo.
     assert "<mock-llm>" not in dumped
     assert len(dumped) > 40  # substantive real output, not an empty child
+
+    # Slice 5: the child is a first-class recorded run with lineage.
+    child_dir = tmp_path / "real-parent__sg_bench"
+    assert (child_dir / "spec.json").exists()  # synthesized child spec persisted
+    child_out = _json.loads((child_dir / "output.json").read_text(encoding="utf-8"))
+    assert child_out["metadata"]["parent_run_id"] == "real-parent"
+    assert child_out["metadata"]["graph_depth"] == 1
+    assert "<mock-llm>" not in _json.dumps(child_out["values"])
