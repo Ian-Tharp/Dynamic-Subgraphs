@@ -119,9 +119,15 @@ class LangGraphExecutor:
         concrete = _coerce_compiled_graph(compiled)
         config = self._invoke_config(concrete.spec, run_id)
         # Seed caller-supplied metadata (e.g. graph_depth for nested subgraphs)
-        # while keeping run_id authoritative — run_id is set last so a caller
-        # can't accidentally override it.
-        metadata = {**(initial_metadata or {}), "run_id": run_id}
+        # while keeping run_id and this graph's own budget authoritative — both
+        # are set after the caller's dict so a caller can't override them. The
+        # budget lets a spawn_subgraph node clamp a child to the parent's
+        # remaining (budget_max_llm_calls - llm_calls_consumed).
+        metadata = {
+            **(initial_metadata or {}),
+            "budget_max_llm_calls": concrete.spec.budget.max_llm_calls,
+            "run_id": run_id,
+        }
         state = concrete.graph.invoke(
             make_initial_state(inputs=inputs, metadata=metadata),
             config=config,

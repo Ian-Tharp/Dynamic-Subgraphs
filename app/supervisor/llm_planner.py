@@ -122,6 +122,20 @@ Required params per executable kind (omitting these will fail validation):
   the caller will want to find on disk: a final report, an emitted
   configuration, a generated message body. Don't use it for
   intermediate state — that's what `state.values` is for.
+- `spawn_subgraph` -> {{ "sub_goal": "<goal for a bounded child workflow>",
+                       "name": "<short_snake_case_id>",
+                       "inputs_from": ["<parent_state_key>", ...] (optional) }}
+  Delegates a self-contained sub-task to a freshly planned CHILD graph that
+  runs to completion and hands its produced values back into this node's
+  `outputs[0]` (as a dict of the child's outputs). The child is planned from
+  `sub_goal` at runtime, runs one level deeper, and is budget-clamped to this
+  graph's remaining LLM allowance. `inputs_from` seeds the listed parent
+  `state.values` keys into the child.
+  Use this ONLY when a sub-task genuinely deserves its own multi-step workflow
+  (it would itself need several nodes / its own fan-out or routing). For a
+  single step, just use `llm_call` or `tool_call` — do NOT wrap one call in a
+  subgraph. Children may not use `wait_for_event` (no durable pause inside a
+  child). Keep nesting shallow.
 
 Edges connect node ids. `START` and `END` are literal string sentinels —
 not node ids you declare in `nodes`. Every graph needs at least one edge
@@ -220,11 +234,7 @@ class LLMPlanner:
         self._executable_kinds = (
             executable_kinds
             if executable_kinds is not None
-            else (set(default_runners().keys()) | set(COMPILER_HANDLED_KINDS))
-            # spawn_subgraph is executable + wired, but gated out of the planner's
-            # default vocabulary until child-spend clamping + planner guidance land
-            # (nested-subgraphs slice 4). Pass executable_kinds explicitly to opt in.
-            - {NodeKind.SPAWN_SUBGRAPH}
+            else set(default_runners().keys()) | set(COMPILER_HANDLED_KINDS)
         )
         self._executable_reduce_strategies = (
             executable_reduce_strategies

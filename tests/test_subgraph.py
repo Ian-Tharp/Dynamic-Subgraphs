@@ -40,13 +40,15 @@ def _state(*, values=None, graph_depth=0, run_id="root"):
 def test_runner_runs_child_and_hands_back_its_values() -> None:
     captured: dict = {}
 
-    def launcher(sub_goal, *, run_id, graph_depth, parent_run_id, inputs):
+    def launcher(sub_goal, *, run_id, graph_depth, parent_run_id, inputs,
+                 max_llm_calls=None):
         captured.update(
             sub_goal=sub_goal,
             run_id=run_id,
             graph_depth=graph_depth,
             parent_run_id=parent_run_id,
             inputs=inputs,
+            max_llm_calls=max_llm_calls,
         )
         return ChildResult(
             values={"answer": 42}, counters={"llm_calls_consumed": 2}, status="ok"
@@ -59,7 +61,8 @@ def test_runner_runs_child_and_hands_back_its_values() -> None:
         {"sub_goal": "do a thing", "name": "child1", "inputs_from": ["x"]},
     )
 
-    assert out == {"result": {"answer": 42}}
+    assert out["result"] == {"answer": 42}
+    assert out["__spend__"] == {"llm_calls_consumed": 2}  # child spend rolled up
     assert captured["sub_goal"] == "do a thing"
     assert captured["run_id"] == "parent__sg_child1"  # deterministic child id
     assert captured["graph_depth"] == 1  # one deeper than the parent
@@ -258,14 +261,110 @@ def test_spawn_subgraph_end_to_end_merges_child_output_into_parent() -> None:
     assert result.state["counters"]["llm_calls_consumed"] >= 1
 
 
-def test_planner_does_not_advertise_spawn_subgraph_by_default() -> None:
-    # Gated until budget-aware (slice 4): spawn_subgraph is wired and tested, but
-    # the planner must not spontaneously emit nested subgraphs before child-spend
-    # clamping and planner guidance exist. A caller can still opt in explicitly
-    # via executable_kinds.
+def test_spawn_subgraph_rolls_up_child_spend_into_parent_ledger() -> None:
+    # The parent ledger must reflect the child's ACTUAL spend, not a flat floor:
+    # a child running two llm_call nodes contributes llm_calls_consumed == 2 and
+    # nodes_executed == 2 to the parent, plus 1 node for the spawn itself.
+    from app.registry import validate_graph_spec
+    from app.runtime.executor import LangGraphExecutor
+
+    child = _child_spec(
+        "child",
+        nodes=[
+            NodeSpec(id="a", kind=NodeKind.LLM_CALL, outputs=["a"],
+                     params={"instruction": "A"}),
+            NodeSpec(id="b", kind=NodeKind.LLM_CALL, inputs=["a"], outputs=["b"],
+                     params={"instruction": "B"}),
+        ],
+        edges=[EdgeSpec.model_validate({"from": "START", "to": "a"}),
+               EdgeSpec.model_validate({"from": "a", "to": "b"}),
+               EdgeSpec.model_validate({"from": "b", "to": "END"})],
+    )
+
+    def child_planner(sub_goal):
+        del sub_goal
+        return child
+
+    def echo(state, params):
+        del state
+        return {"result": params["instruction"]}
+
+    runners = {NodeKind.LLM_CALL: echo}
+    executor = LangGraphExecutor(runners=runners)
+    runners[NodeKind.SPAWN_SUBGRAPH] = build_spawn_subgraph_runner(
+        make_child_launcher(planner=child_planner, executor=executor)
+    )
+
+    parent = _child_spec(
+        "parent",
+        nodes=[NodeSpec(id="spawn", kind=NodeKind.SPAWN_SUBGRAPH, outputs=["rep"],
+                        params={"sub_goal": "g", "name": "c"})],
+        edges=[EdgeSpec.model_validate({"from": "START", "to": "spawn"}),
+               EdgeSpec.model_validate({"from": "spawn", "to": "END"})],
+    )
+    result = executor.execute(executor.compile(validate_graph_spec(parent)), run_id="p")
+
+    assert result.ok is True
+    assert result.state["counters"]["llm_calls_consumed"] == 2  # child's actual
+    assert result.state["counters"]["nodes_executed"] == 3  # 1 spawn + 2 child
+
+
+def test_spawn_subgraph_clamps_child_budget_to_parent_remaining() -> None:
+    # The parent budget allows only 1 LLM call. The spawn's child wants 2, so
+    # the child's budget is clamped to the parent's remaining (1) and the
+    # oversized child fails closed — a nest can't overspend the root budget.
+    from app.registry import validate_graph_spec
+    from app.runtime.executor import LangGraphExecutor
+
+    child = _child_spec(
+        "child",
+        nodes=[
+            NodeSpec(id="a", kind=NodeKind.LLM_CALL, outputs=["a"],
+                     params={"instruction": "A"}),
+            NodeSpec(id="b", kind=NodeKind.LLM_CALL, inputs=["a"], outputs=["b"],
+                     params={"instruction": "B"}),
+        ],
+        edges=[EdgeSpec.model_validate({"from": "START", "to": "a"}),
+               EdgeSpec.model_validate({"from": "a", "to": "b"}),
+               EdgeSpec.model_validate({"from": "b", "to": "END"})],
+    )
+
+    def child_planner(sub_goal):
+        del sub_goal
+        return child
+
+    def echo(state, params):
+        del state
+        return {"result": params["instruction"]}
+
+    runners = {NodeKind.LLM_CALL: echo}
+    executor = LangGraphExecutor(runners=runners)
+    runners[NodeKind.SPAWN_SUBGRAPH] = build_spawn_subgraph_runner(
+        make_child_launcher(planner=child_planner, executor=executor)
+    )
+
+    parent = _child_spec(
+        "parent",
+        nodes=[NodeSpec(id="spawn", kind=NodeKind.SPAWN_SUBGRAPH, outputs=["rep"],
+                        params={"sub_goal": "g", "name": "c"})],
+        edges=[EdgeSpec.model_validate({"from": "START", "to": "spawn"}),
+               EdgeSpec.model_validate({"from": "spawn", "to": "END"})],
+        budget=GraphBudget(max_llm_calls=1),
+    )
+    result = executor.execute(executor.compile(validate_graph_spec(parent)), run_id="p")
+
+    assert result.ok is False  # the oversized child was clamped and failed closed
+    assert result.state["errors"]
+
+
+def test_planner_advertises_spawn_subgraph_with_guidance() -> None:
+    # Slice 4 un-gates nesting: now that child spend rolls up and child budgets
+    # are clamped to the parent's remaining, the planner may reach for
+    # spawn_subgraph. The system prompt must describe it (params + when to use).
     from app.supervisor.llm_planner import LLMPlanner
 
     planner = LLMPlanner(object())  # __init__ doesn't touch the model
 
-    assert NodeKind.SPAWN_SUBGRAPH not in planner._executable_kinds
-    assert "spawn_subgraph" not in planner._system_prompt
+    assert NodeKind.SPAWN_SUBGRAPH in planner._executable_kinds
+    assert "spawn_subgraph" in planner._system_prompt
+    assert "sub_goal" in planner._system_prompt  # params are documented

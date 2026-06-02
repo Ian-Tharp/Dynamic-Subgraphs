@@ -69,6 +69,7 @@ class ChildLauncher:
         graph_depth: int,
         parent_run_id: str,
         inputs: dict[str, Any],
+        max_llm_calls: int | None = None,
     ) -> ChildResult:  # pragma: no cover - structural
         ...
 
@@ -103,6 +104,15 @@ def build_spawn_subgraph_runner(
         parent_values = state.get("values", {}) or {}
         inputs = {key: parent_values[key] for key in inputs_from if key in parent_values}
 
+        # Clamp the child to the parent's remaining LLM budget so a nest can't
+        # outspend the root. `consumed` already reflects earlier siblings' rolled
+        # -up child spend, so successive spawns see a shrinking allowance.
+        budget_max = metadata.get("budget_max_llm_calls")
+        max_llm_calls: int | None = None
+        if budget_max is not None:
+            consumed = int((state.get("counters", {}) or {}).get("llm_calls_consumed", 0))
+            max_llm_calls = max(0, int(budget_max) - consumed)
+
         child_run_id = f"{parent_run_id}__sg_{name}"
         result = launcher(
             sub_goal,
@@ -110,13 +120,19 @@ def build_spawn_subgraph_runner(
             graph_depth=depth + 1,
             parent_run_id=parent_run_id,
             inputs=inputs,
+            max_llm_calls=max_llm_calls,
         )
         if result.status != "ok":
             raise SubgraphChildFailed(
                 f"child subgraph {child_run_id!r} ended with status "
                 f"{result.status!r}: {result.response}"
             )
-        return {"result": dict(result.values)}
+        # Hand the child's values back under `result` (mapped to the node's
+        # declared output) and roll the child's ACTUAL spend up to the parent
+        # ledger via the reserved `__spend__` key (see make_node_wrapper). The
+        # spawn node makes no *direct* LLM call, so all llm spend here is the
+        # child's — no floor double-count.
+        return {"result": dict(result.values), "__spend__": dict(result.counters)}
 
     return _runner
 
@@ -143,8 +159,18 @@ def make_child_launcher(
         graph_depth: int,
         parent_run_id: str,
         inputs: dict[str, Any],
+        max_llm_calls: int | None = None,
     ) -> ChildResult:
-        validated = validate_graph_spec(planner(sub_goal), registry)
+        spec = planner(sub_goal)
+        if max_llm_calls is not None:
+            # Cap the child's LLM budget to the parent's remaining allowance
+            # before validation; an oversized child then fails closed rather
+            # than overspending the nest.
+            capped = spec.budget.model_copy(
+                update={"max_llm_calls": min(spec.budget.max_llm_calls, max_llm_calls)}
+            )
+            spec = spec.model_copy(update={"budget": capped})
+        validated = validate_graph_spec(spec, registry)
         if any(node.kind == NodeKind.WAIT_FOR_EVENT for node in validated.nodes):
             raise SubgraphContainsWaitForEvent(
                 f"child subgraph {run_id!r} contains a wait_for_event node; "

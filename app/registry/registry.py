@@ -171,7 +171,13 @@ class Registry:
         so the runtime ledger and the planner's static estimate agree on what
         counts. `parallel_map` is excluded here: its per-fan-out child calls
         are counted at runtime by the worker, not by the dispatcher node.
+        `spawn_subgraph` is also excluded: it makes no *direct* call — its
+        child's actual spend is rolled up into the ledger separately (the
+        `counts_as_llm_call=True` flag is only the planner's static floor), so
+        counting it here too would double-count the rolled-up child.
         """
+        if node.kind == NodeKind.SPAWN_SUBGRAPH:
+            return False
         definition = self._kinds.get(node.kind)
         if definition is None:
             return False

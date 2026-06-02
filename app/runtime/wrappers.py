@@ -30,6 +30,7 @@ from app.models import (
     TraceEvent,
     TraceEventKind,
 )
+from app.models.run_state import add_counters
 from app.runtime.runners import NodeRunner
 
 
@@ -95,13 +96,20 @@ def make_node_wrapper(
             node_id=node.id,
             data={"duration_ms": duration_ms},
         )
+        # A runner may report spend it incurred internally (e.g. spawn_subgraph
+        # running a whole child graph) via the reserved `__spend__` key; fold it
+        # into this node's ledger delta so nested cost rolls up to the parent.
+        counters = node_counter_delta(counts_as_llm_call)
+        extra_spend = raw_outputs.get("__spend__") if isinstance(raw_outputs, Mapping) else None
+        if extra_spend:
+            counters = add_counters(counters, dict(extra_spend))
         return {
             "values": value_updates,
             "events": [
                 started.model_dump(mode="json"),
                 finished.model_dump(mode="json"),
             ],
-            "counters": node_counter_delta(counts_as_llm_call),
+            "counters": counters,
         }
 
     return _run
