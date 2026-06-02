@@ -29,3 +29,6 @@ def test_chain_request_defaults() -> None:
     req = ChainRequest(prompt="hi")
     assert req.max_iterations == 3
     assert req.mode == "auto"
+    assert req.decider == "status"
+    assert req.success_criteria is None
+    assert req.judge_failed_runs is False

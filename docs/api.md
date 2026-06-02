@@ -62,6 +62,12 @@ Requesting `planner=openai` without `OPENAI_API_KEY` set returns `503`.
 | `GET` | `/registry` | node kinds, param JSON-schemas, tool/subagent allowlists, forbidden kinds |
 | `GET` | `/healthz` | liveness |
 
+`POST /chains` defaults to `decider="status"`: token-free, stop on `ok`, ask
+on `paused`, fail closed otherwise. Set `decider="llm"` to use the structured
+iteration judge after each completed iteration; it can `stop`, `replan`,
+`ask_user`, or `fail`, and accepts optional `success_criteria` plus
+`judge_failed_runs`.
+
 ---
 
 ## Execution modes — sync / async / auto
@@ -179,6 +185,17 @@ curl -X POST http://localhost:8000/chains \
   -d '{"prompt": "refine this", "max_iterations": 3}'
 
 curl http://localhost:8000/chains/<chain_id>
+
+# Adaptive chain with an LLM iteration judge
+curl -X POST http://localhost:8000/chains \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "research and refine this",
+    "planner": "openai",
+    "decider": "llm",
+    "success_criteria": "Answer with grounded evidence and a clear recommendation.",
+    "max_iterations": 3
+  }'
 
 # Registry + health
 curl http://localhost:8000/registry

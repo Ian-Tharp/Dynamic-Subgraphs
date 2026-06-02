@@ -137,3 +137,45 @@ def test_real_chain_runs(tmp_path: Path) -> None:
     body = resp.json()
     assert body["status"] in {"ok", "stopped", "max_iterations"}
     assert len(body["steps"]) >= 1
+
+
+def test_real_chain_with_llm_decider(tmp_path: Path) -> None:
+    """Real-call proof for POST /chains with decider='llm'.
+
+    The structured LLM iteration judge must actually run after each iteration —
+    proven by a model-generated final reason (never the StatusIterationDecider's
+    fixed fallback string) and structured decision detail on every step. This is
+    the path the mock suite cannot exercise.
+    """
+    client = _client(tmp_path)
+    resp = client.post(
+        "/chains",
+        json=_openai(
+            "Compare Redis and Memcached for caching a small web app; recommend one.",
+            mode="sync",
+            run_id="it-chain-llm",
+            max_iterations=2,
+            decider="llm",
+            success_criteria="A clear recommendation with at least one concrete tradeoff.",
+        ),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] in {"ok", "stopped", "max_iterations"}
+    assert len(body["steps"]) >= 1
+
+    # Every step carries the structured judge decision.
+    for step in body["steps"]:
+        assert step["decision_detail"] is not None
+        assert step["decision_detail"]["reason"]
+
+    # The real LLM judge ran: its reason is model-generated, never the
+    # StatusIterationDecider's fixed fallback string. This distinguishes a true
+    # decider='llm' run from a silent fallback to the token-free status decider.
+    final = body["final_decision"]
+    assert final is not None and final["reason"]
+    assert final["reason"] != "The bounded run completed successfully."
+
+    import json as _json
+
+    assert "<mock-llm>" not in _json.dumps(body)

@@ -10,6 +10,7 @@ from app.api.deps import (
     AppContext,
     get_context,
     require_auth,
+    resolve_chain_decider,
     resolve_run_config,
 )
 from app.api.errors import Conflict, NotFound
@@ -18,6 +19,33 @@ from app.api.schemas import ChainRequest
 from app.recording.recorder import _validate_run_id
 
 router = APIRouter(tags=["chains"])
+
+
+def _job_state_for_chain(status: str) -> JobState:
+    """Map an iterative-chain terminal status onto a job state.
+
+    `ask_user` is a *paused* outcome — the LLM judge needs the human before the
+    chain can continue — not a failure. Mirror how /runs maps a paused run, so a
+    legitimate clarification request isn't recorded as FAILED.
+    """
+    if status in {"ok", "stopped", "max_iterations"}:
+        return JobState.OK
+    if status == "ask_user":
+        return JobState.PAUSED
+    return JobState.FAILED
+
+
+def _decision_payload(decision: Any | None) -> dict[str, Any] | None:
+    if decision is None:
+        return None
+    return {
+        "action": decision.action,
+        "reason": decision.reason,
+        "success_criteria_met": decision.success_criteria_met,
+        "gaps": list(decision.gaps),
+        "next_prompt": decision.next_prompt,
+        "question_to_user": decision.question_to_user,
+    }
 
 
 def _chain_payload(result: Any) -> dict[str, Any]:
@@ -31,23 +59,34 @@ def _chain_payload(result: Any) -> dict[str, Any]:
                 "run_id": s.run_id,
                 "status": s.result.status,
                 "decision": s.decision.action,
+                "decision_detail": _decision_payload(s.decision),
                 "reason": s.decision.reason,
             }
             for s in result.steps
         ],
+        "final_decision": _decision_payload(result.final_decision),
     }
 
 
-def _make_chain_worker(ctx: AppContext, config, prompt: str, run_id: str, max_iter: int):
+def _make_chain_worker(
+    ctx: AppContext,
+    config,
+    prompt: str,
+    run_id: str,
+    max_iter: int,
+    decider,
+):
     supervisor = ctx.supervisor_for(config)
 
     def work(job: Job) -> None:
         job.set_state(JobState.RUNNING)
         result = supervisor.run_iteratively(
-            prompt, run_id=run_id, max_iterations=max_iter
+            prompt,
+            run_id=run_id,
+            max_iterations=max_iter,
+            decider=decider,
         )
-        state = JobState.OK if result.status in {"ok", "stopped", "max_iterations"} else JobState.FAILED
-        job.complete(result=result, state=state)
+        job.complete(result=result, state=_job_state_for_chain(result.status))
 
     return work
 
@@ -60,6 +99,13 @@ def create_chain(
 ) -> Response:
     ctx = get_context(request)
     config = resolve_run_config(ctx, planner=body.planner, model=body.model)
+    decider = resolve_chain_decider(
+        ctx,
+        config=config,
+        decider=body.decider,
+        success_criteria=body.success_criteria,
+        judge_failed_runs=body.judge_failed_runs,
+    )
     run_id = body.run_id or f"chain-{__import__('uuid').uuid4().hex[:12]}"
     _validate_run_id(run_id)
     if ctx.jobs.get(run_id) is not None or ctx.recorder.exists(run_id):
@@ -67,13 +113,25 @@ def create_chain(
 
     job = ctx.jobs.create(run_id, kind="chain")
     ctx.jobs.submit(
-        job, _make_chain_worker(ctx, config, body.prompt, run_id, body.max_iterations)
+        job,
+        _make_chain_worker(
+            ctx,
+            config,
+            body.prompt,
+            run_id,
+            body.max_iterations,
+            decider,
+        ),
     )
 
     if body.mode == "async":
         return JSONResponse(
             status_code=202,
-            content={"chain_id": run_id, "status": job.state.value, "links": {"self": f"/chains/{run_id}"}},
+            content={
+                "chain_id": run_id,
+                "status": job.state.value,
+                "links": {"self": f"/chains/{run_id}"},
+            },
         )
 
     timeout = (
@@ -86,7 +144,11 @@ def create_chain(
         return JSONResponse(status_code=200, content=_chain_payload(job.result))
     return JSONResponse(
         status_code=202,
-        content={"chain_id": run_id, "status": job.state.value, "links": {"self": f"/chains/{run_id}"}},
+        content={
+            "chain_id": run_id,
+            "status": job.state.value,
+            "links": {"self": f"/chains/{run_id}"},
+        },
     )
 
 

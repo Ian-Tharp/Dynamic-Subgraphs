@@ -37,6 +37,12 @@ The default decider is intentionally conservative:
 - `paused` -> `ask_user`;
 - anything else -> `fail`.
 
+The HTTP API exposes the same choice on `POST /chains`:
+
+- `decider="status"` keeps the conservative default and is token-free;
+- `decider="llm"` uses the structured iteration judge after each completed
+  iteration, with optional `success_criteria` and `judge_failed_runs`.
+
 Pass a custom `IterationDecider` to enable adaptive behavior:
 
 ```python

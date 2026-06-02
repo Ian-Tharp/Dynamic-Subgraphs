@@ -13,7 +13,12 @@ from app.api.jobs import JobStore
 from app.api.settings import ApiSettings
 from app.assembly import RunConfig, build_supervisor
 from app.recording import FileRecorder
-from app.supervisor import Supervisor
+from app.supervisor import (
+    IterationDecider,
+    StatusIterationDecider,
+    Supervisor,
+    build_openai_iteration_decider,
+)
 
 
 @dataclass
@@ -67,6 +72,43 @@ def resolve_run_config(
         model=chosen_model,
         strict_runners=chosen_planner == "openai",
     )
+
+
+def resolve_chain_decider(
+    ctx: AppContext,
+    *,
+    config: RunConfig,
+    decider: str,
+    success_criteria: str | None,
+    judge_failed_runs: bool,
+) -> IterationDecider:
+    """Resolve the chain-level orchestration judge for `/chains`.
+
+    The status decider is token-free and remains the default. The LLM decider is
+    explicit because it makes an additional model call after each successful
+    iteration to decide whether to stop, replan, ask the user, or fail.
+    """
+
+    if decider == "status":
+        return StatusIterationDecider()
+
+    if decider == "llm":
+        if not os.environ.get("OPENAI_API_KEY"):
+            raise ServiceUnavailable(
+                "decider=llm requested but OPENAI_API_KEY is not set"
+            )
+        if not ctx.settings.is_model_allowed(config.model):
+            raise BadRequest(
+                f"Model {config.model!r} is not in the allowlist "
+                f"{list(ctx.settings.model_allowlist)}"
+            )
+        return build_openai_iteration_decider(
+            model=config.model,
+            success_criteria=success_criteria,
+            judge_failed_runs=judge_failed_runs,
+        )
+
+    raise BadRequest(f"Unknown chain decider {decider!r}")
 
 
 def require_auth(request: Request) -> None:

@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 ExecutionMode = Literal["sync", "async", "auto"]
 PlannerChoice = Literal["mock", "openai"]
+ChainDeciderChoice = Literal["status", "llm"]
 
 
 class RunRequest(BaseModel):
@@ -26,6 +27,9 @@ class ChainRequest(BaseModel):
     planner: PlannerChoice | None = None
     model: str | None = None
     max_iterations: int = Field(default=3, ge=1, le=10)
+    decider: ChainDeciderChoice = "status"
+    success_criteria: str | None = Field(default=None, min_length=1, max_length=4000)
+    judge_failed_runs: bool = False
 
 
 class ResumeRequest(BaseModel):
