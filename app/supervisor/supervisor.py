@@ -284,7 +284,14 @@ class Supervisor:
             )
 
         try:
-            result = self._executor.execute(compiled, run_id=effective_new_run_id)
+            # Seed `replay_of` (the ORIGINAL run id) so any spawn_subgraph node
+            # pins its child to the originally recorded child spec instead of
+            # re-planning — making nested replay reproduce the same shape.
+            result = self._executor.execute(
+                compiled,
+                run_id=effective_new_run_id,
+                initial_metadata={"replay_of": run_id},
+            )
         except Exception as exc:  # noqa: BLE001
             return SupervisorResult(
                 run_id=effective_new_run_id,

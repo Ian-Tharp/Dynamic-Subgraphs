@@ -43,7 +43,7 @@ def test_runner_runs_child_and_hands_back_its_values() -> None:
     captured: dict = {}
 
     def launcher(sub_goal, *, run_id, graph_depth, parent_run_id, inputs,
-                 max_llm_calls=None):
+                 max_llm_calls=None, replay_of=None):
         captured.update(
             sub_goal=sub_goal,
             run_id=run_id,
@@ -51,6 +51,7 @@ def test_runner_runs_child_and_hands_back_its_values() -> None:
             parent_run_id=parent_run_id,
             inputs=inputs,
             max_llm_calls=max_llm_calls,
+            replay_of=replay_of,
         )
         return ChildResult(
             values={"answer": 42}, counters={"llm_calls_consumed": 2}, status="ok"
@@ -70,6 +71,27 @@ def test_runner_runs_child_and_hands_back_its_values() -> None:
     assert captured["graph_depth"] == 1  # one deeper than the parent
     assert captured["parent_run_id"] == "parent"
     assert captured["inputs"] == {"x": 1}  # only the inputs_from keys, seeded
+
+
+def test_runner_pins_child_to_original_recorded_spec_during_replay() -> None:
+    # On replay the runner reads `replay_of` (the ORIGINAL parent run id) from
+    # metadata and tells the launcher which recorded child spec to reuse, while
+    # still running the child under the NEW (replay) parent's id.
+    captured: dict = {}
+
+    def launcher(sub_goal, *, run_id, graph_depth, parent_run_id, inputs,
+                 max_llm_calls=None, replay_of=None):
+        captured.update(run_id=run_id, replay_of=replay_of)
+        return ChildResult(values={}, counters={}, status="ok")
+
+    runner = build_spawn_subgraph_runner(launcher)
+    state = _state(run_id="Y", graph_depth=0)
+    state["metadata"]["replay_of"] = "X"  # replaying original run X under Y
+
+    runner(state, {"sub_goal": "g", "name": "c"})
+
+    assert captured["run_id"] == "Y__sg_c"  # child runs under the replay parent
+    assert captured["replay_of"] == "X__sg_c"  # but reuses the original's spec
 
 
 def test_runner_enforces_depth_ceiling_before_launching() -> None:
@@ -174,6 +196,57 @@ def test_launcher_records_child_run_with_lineage(tmp_path) -> None:
     out = json.loads((child_dir / "output.json").read_text(encoding="utf-8"))
     assert out["metadata"]["parent_run_id"] == "parent"
     assert out["metadata"]["graph_depth"] == 1
+
+
+def test_launcher_pins_recorded_child_spec_on_replay(tmp_path) -> None:
+    # Replay determinism: a child planned non-deterministically must, on replay,
+    # reuse the ORIGINALLY RECORDED spec rather than re-planning. The planner
+    # returns spec A first, spec B after — pinning must reuse A and never consult
+    # the planner again.
+    from app.recording import FileRecorder
+    from app.runtime.executor import LangGraphExecutor
+
+    spec_a = _child_spec(
+        "child-a",
+        nodes=[NodeSpec(id="step", kind=NodeKind.LLM_CALL, outputs=["out"],
+                        params={"instruction": "alpha"})],
+        edges=[EdgeSpec.model_validate({"from": "START", "to": "step"}),
+               EdgeSpec.model_validate({"from": "step", "to": "END"})],
+    )
+    spec_b = _child_spec(
+        "child-b",
+        nodes=[NodeSpec(id="step", kind=NodeKind.LLM_CALL, outputs=["out"],
+                        params={"instruction": "beta"})],
+        edges=[EdgeSpec.model_validate({"from": "START", "to": "step"}),
+               EdgeSpec.model_validate({"from": "step", "to": "END"})],
+    )
+    calls = {"n": 0}
+
+    def planner(sub_goal):
+        del sub_goal
+        spec = spec_a if calls["n"] == 0 else spec_b
+        calls["n"] += 1
+        return spec
+
+    def echo(state, params):
+        del state
+        return {"result": params["instruction"]}
+
+    recorder = FileRecorder(tmp_path)
+    executor = LangGraphExecutor(runners={NodeKind.LLM_CALL: echo})
+    launcher = make_child_launcher(planner=planner, executor=executor, recorder=recorder)
+
+    # Original run: plans spec_a and records it under X__sg_c.
+    r1 = launcher("g", run_id="X__sg_c", graph_depth=1, parent_run_id="X", inputs={})
+    assert r1.values["out"] == "alpha"
+    assert calls["n"] == 1
+
+    # Replay: pin to the recorded original child spec; the planner (which would
+    # now hand back spec_b) must NOT be consulted.
+    r2 = launcher("g", run_id="Y__sg_c", graph_depth=1, parent_run_id="Y", inputs={},
+                  replay_of="X__sg_c")
+    assert r2.values["out"] == "alpha"  # reused recorded spec_a, not spec_b
+    assert calls["n"] == 1  # planner not called again during replay
 
 
 def test_launcher_bans_wait_for_event_in_children() -> None:
@@ -396,6 +469,68 @@ def test_spawn_subgraph_clamps_child_budget_to_parent_remaining() -> None:
 
     assert result.ok is False  # the oversized child was clamped and failed closed
     assert result.state["errors"]
+
+
+def test_supervisor_replay_pins_nested_child_to_recorded_spec(tmp_path) -> None:
+    # Full e2e: a recorded nested run, on Supervisor.replay, reuses the
+    # originally recorded child spec rather than re-planning — so the nested
+    # shape reproduces deterministically (the canon-critical replay guarantee).
+    from app.recording import FileRecorder
+    from app.runtime.executor import LangGraphExecutor
+    from app.supervisor import Supervisor
+
+    parent = _child_spec(
+        "parent",
+        nodes=[NodeSpec(id="spawn", kind=NodeKind.SPAWN_SUBGRAPH, outputs=["rep"],
+                        params={"sub_goal": "child goal", "name": "c"})],
+        edges=[EdgeSpec.model_validate({"from": "START", "to": "spawn"}),
+               EdgeSpec.model_validate({"from": "spawn", "to": "END"})],
+    )
+    child_a = _child_spec(
+        "child-a",
+        nodes=[NodeSpec(id="step", kind=NodeKind.LLM_CALL, outputs=["out"],
+                        params={"instruction": "alpha"})],
+        edges=[EdgeSpec.model_validate({"from": "START", "to": "step"}),
+               EdgeSpec.model_validate({"from": "step", "to": "END"})],
+    )
+    child_b = _child_spec(
+        "child-b",
+        nodes=[NodeSpec(id="step", kind=NodeKind.LLM_CALL, outputs=["out"],
+                        params={"instruction": "beta"})],
+        edges=[EdgeSpec.model_validate({"from": "START", "to": "step"}),
+               EdgeSpec.model_validate({"from": "step", "to": "END"})],
+    )
+    child_calls = {"n": 0}
+
+    def planner(prompt):
+        if prompt == "PARENT GOAL":
+            return parent
+        spec = child_a if child_calls["n"] == 0 else child_b
+        child_calls["n"] += 1
+        return spec
+
+    def echo(state, params):
+        del state
+        return {"result": params["instruction"]}
+
+    recorder = FileRecorder(tmp_path)
+    runners = {NodeKind.LLM_CALL: echo}
+    executor = LangGraphExecutor(runners=runners)
+    runners[NodeKind.SPAWN_SUBGRAPH] = build_spawn_subgraph_runner(
+        make_child_launcher(planner=planner, executor=executor, recorder=recorder)
+    )
+    supervisor = Supervisor(planner=planner, executor=executor, recorder=recorder)
+
+    original = supervisor.run("PARENT GOAL", run_id="p1")
+    assert original.status == "ok"
+    assert original.result.state["values"]["rep"] == {"out": "alpha"}
+    assert child_calls["n"] == 1  # child planned once
+
+    replayed = supervisor.replay("p1", new_run_id="p1_replay")
+    assert replayed.status == "ok"
+    # Reused the recorded child spec (alpha), NOT a fresh plan (which is beta).
+    assert replayed.result.state["values"]["rep"] == {"out": "alpha"}
+    assert child_calls["n"] == 1  # planner NOT consulted again for the child
 
 
 def test_planner_advertises_spawn_subgraph_with_guidance() -> None:

@@ -71,6 +71,7 @@ class ChildLauncher:
         parent_run_id: str,
         inputs: dict[str, Any],
         max_llm_calls: int | None = None,
+        replay_of: str | None = None,
     ) -> ChildResult:  # pragma: no cover - structural
         ...
 
@@ -115,6 +116,11 @@ def build_spawn_subgraph_runner(
             max_llm_calls = max(0, int(budget_max) - consumed)
 
         child_run_id = f"{parent_run_id}__sg_{name}"
+        # If this run is itself a replay (metadata carries the ORIGINAL parent's
+        # run id), pin the child to the original's recorded spec by deriving the
+        # original child run id; the launcher loads it instead of re-planning.
+        replay_of = metadata.get("replay_of")
+        original_child_run_id = f"{replay_of}__sg_{name}" if replay_of else None
         result = launcher(
             sub_goal,
             run_id=child_run_id,
@@ -122,6 +128,7 @@ def build_spawn_subgraph_runner(
             parent_run_id=parent_run_id,
             inputs=inputs,
             max_llm_calls=max_llm_calls,
+            replay_of=original_child_run_id,
         )
         if result.status != "ok":
             raise SubgraphChildFailed(
@@ -168,8 +175,19 @@ def make_child_launcher(
         parent_run_id: str,
         inputs: dict[str, Any],
         max_llm_calls: int | None = None,
+        replay_of: str | None = None,
     ) -> ChildResult:
-        spec = planner(sub_goal)
+        # Replay determinism: when replaying, reuse the originally recorded child
+        # spec (`replay_of` is its run id) instead of re-planning, so the nested
+        # shape reproduces. Fall back to planning if it can't be loaded.
+        spec = None
+        if replay_of is not None and recorder is not None:
+            try:
+                spec = recorder.load_validated_spec(replay_of)
+            except Exception:  # noqa: BLE001 - missing/unreadable spec -> re-plan
+                spec = None
+        if spec is None:
+            spec = planner(sub_goal)
         if max_llm_calls is not None:
             # Cap the child's LLM budget to the parent's remaining allowance
             # before validation; an oversized child then fails closed rather
@@ -186,14 +204,18 @@ def make_child_launcher(
                 "(synchronous children only in v1)"
             )
 
+        child_metadata: dict[str, Any] = {
+            "graph_depth": graph_depth,
+            "parent_run_id": parent_run_id,
+        }
+        if replay_of is not None:
+            # Propagate replay so a grandchild also pins to its recorded spec.
+            child_metadata["replay_of"] = replay_of
         result = executor.execute(
             executor.compile(validated),
             run_id=run_id,
             inputs=inputs or None,
-            initial_metadata={
-                "graph_depth": graph_depth,
-                "parent_run_id": parent_run_id,
-            },
+            initial_metadata=child_metadata,
         )
         if recorder is not None:
             try:
