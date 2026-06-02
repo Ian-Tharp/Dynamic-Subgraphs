@@ -82,14 +82,19 @@ def build_graph(
 
     for node in spec.nodes:
         if node.kind == NodeKind.PARALLEL_MAP:
-            _add_parallel_map(graph, node, available_runners)
+            _add_parallel_map(graph, node, available_runners, reg)
         elif node.kind == NodeKind.BRANCH:
             graph.add_node(node.id, make_branch_node(node))
         elif node.kind == NodeKind.WAIT_FOR_EVENT:
             graph.add_node(node.id, make_wait_for_event_node(node))
         else:
             graph.add_node(
-                node.id, make_node_wrapper(node, available_runners[node.kind])
+                node.id,
+                make_node_wrapper(
+                    node,
+                    available_runners[node.kind],
+                    counts_as_llm_call=reg.counts_as_llm_call_for_node(node),
+                ),
             )
 
     for edge in spec.edges:
@@ -118,6 +123,7 @@ def _add_parallel_map(
     graph: StateGraph,
     node: NodeSpec,
     available_runners: Mapping[NodeKind, NodeRunner],
+    registry: Registry,
 ) -> None:
     child_kind_str = node.params.get("child_kind")
     if not isinstance(child_kind_str, str):
@@ -145,10 +151,17 @@ def _add_parallel_map(
         node.id,
         make_parallel_map_dispatcher(node, worker_id=worker_id, join_id=join_id),
     )
+    child_definition = registry.get_definition(child_kind)
+    child_counts_as_llm_call = bool(
+        child_definition and child_definition.counts_as_llm_call
+    )
     graph.add_node(
         worker_id,
         make_parallel_map_worker(
-            node, child_kind=child_kind, child_runner=child_runner
+            node,
+            child_kind=child_kind,
+            child_runner=child_runner,
+            child_counts_as_llm_call=child_counts_as_llm_call,
         ),
     )
     graph.add_node(join_id, make_parallel_map_joiner(node))

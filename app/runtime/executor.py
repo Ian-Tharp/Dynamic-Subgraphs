@@ -46,6 +46,7 @@ class GraphExecutor(Protocol):
         *,
         inputs: dict[str, Any] | None = None,
         run_id: str,
+        initial_metadata: dict[str, Any] | None = None,
     ) -> ExecutionResult: ...
 
     def resume(
@@ -113,11 +114,16 @@ class LangGraphExecutor:
         *,
         inputs: dict[str, Any] | None = None,
         run_id: str,
+        initial_metadata: dict[str, Any] | None = None,
     ) -> ExecutionResult:
         concrete = _coerce_compiled_graph(compiled)
         config = self._invoke_config(concrete.spec, run_id)
+        # Seed caller-supplied metadata (e.g. graph_depth for nested subgraphs)
+        # while keeping run_id authoritative — run_id is set last so a caller
+        # can't accidentally override it.
+        metadata = {**(initial_metadata or {}), "run_id": run_id}
         state = concrete.graph.invoke(
-            make_initial_state(inputs=inputs, metadata={"run_id": run_id}),
+            make_initial_state(inputs=inputs, metadata=metadata),
             config=config,
         )
         # Only the checkpointer path needs the config back for interrupt

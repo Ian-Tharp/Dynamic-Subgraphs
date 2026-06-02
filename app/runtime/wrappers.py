@@ -35,8 +35,15 @@ from app.runtime.runners import NodeRunner
 def make_node_wrapper(
     node: NodeSpec,
     runner: NodeRunner,
+    *,
+    counts_as_llm_call: bool = False,
 ) -> Callable[[DynamicRunState], DynamicRunState | Command]:
-    """Build the LangGraph-callable wrapper for one NodeSpec + runner pair."""
+    """Build the LangGraph-callable wrapper for one NodeSpec + runner pair.
+
+    `counts_as_llm_call` is the registry's per-node notion of whether running
+    this node spends an LLM call (see `Registry.counts_as_llm_call_for_node`).
+    It feeds the additive spend ledger in `state["counters"]`.
+    """
 
     def _run(state: DynamicRunState) -> DynamicRunState | Command:
         started_at = datetime.now(UTC)
@@ -71,6 +78,7 @@ def make_node_wrapper(
                         started.model_dump(mode="json"),
                         failed.model_dump(mode="json"),
                     ],
+                    "counters": node_counter_delta(counts_as_llm_call),
                 },
                 goto=END,
             )
@@ -87,9 +95,23 @@ def make_node_wrapper(
                 started.model_dump(mode="json"),
                 finished.model_dump(mode="json"),
             ],
+            "counters": node_counter_delta(counts_as_llm_call),
         }
 
     return _run
+
+
+def node_counter_delta(counts_as_llm_call: bool) -> dict[str, int]:
+    """One node's contribution to the additive spend ledger.
+
+    Always counts the node execution; counts an LLM call only when the node's
+    kind consumes one. Returned deltas are summed across concurrent branches by
+    the `add_counters` reducer on `DynamicRunState["counters"]`.
+    """
+    delta = {"nodes_executed": 1}
+    if counts_as_llm_call:
+        delta["llm_calls_consumed"] = 1
+    return delta
 
 
 def map_outputs(node: NodeSpec, raw_outputs: Mapping[str, Any]) -> dict[str, Any]:

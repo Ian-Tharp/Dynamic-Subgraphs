@@ -20,6 +20,7 @@ def make_initial_state(
         "errors": [],
         "events": [],
         "metadata": dict(metadata or {}),
+        "counters": {},
     }
 
 

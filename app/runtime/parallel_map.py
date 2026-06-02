@@ -36,6 +36,7 @@ from langgraph.types import Command, Send
 
 from app.models import DynamicRunState, NodeKind, NodeSpec, TraceEvent, TraceEventKind
 from app.runtime.runners import NodeRunner
+from app.runtime.wrappers import node_counter_delta
 
 # Per-Send payload keys (live in state.values for the worker's branch only)
 _PM_ITEM_KEY = "_pm_item"
@@ -154,8 +155,16 @@ def make_parallel_map_worker(
     *,
     child_kind: NodeKind,
     child_runner: NodeRunner,
+    child_counts_as_llm_call: bool = False,
 ) -> Callable[[DynamicRunState], Any]:
-    """Build the LangGraph node function for one parallel_map worker invocation."""
+    """Build the LangGraph node function for one parallel_map worker invocation.
+
+    Each worker invocation is one node execution that runs the child kind once.
+    `child_counts_as_llm_call` reflects whether that child consumes an LLM call;
+    both feed the additive `state["counters"]` ledger. Because workers run
+    concurrently and LangGraph merges their updates via the `add_counters`
+    reducer, per-worker deltas SUM across the whole fan-out.
+    """
 
     output_key = node.outputs[0] if node.outputs else f"{node.id}_results"
     child_params_template: dict[str, Any] = dict(node.params.get("child_params", {}))
@@ -189,6 +198,10 @@ def make_parallel_map_worker(
             # For llm_call, the runner reads `item` from state.values directly.
             local_params = dict(child_params_template)
 
+        # Count the worker execution (and its child LLM call) even if the child
+        # raises: the spend was incurred. Summed across workers by add_counters.
+        counter_delta = node_counter_delta(child_counts_as_llm_call)
+
         try:
             raw = child_runner(child_state, local_params)
         except Exception as exc:  # noqa: BLE001 - normalize and halt
@@ -203,6 +216,7 @@ def make_parallel_map_worker(
                             "type": type(exc).__name__,
                         }
                     ],
+                    "counters": counter_delta,
                 },
                 goto=END,
             )
@@ -220,6 +234,7 @@ def make_parallel_map_worker(
                             "type": "TypeError",
                         }
                     ],
+                    "counters": counter_delta,
                 },
                 goto=END,
             )
@@ -227,7 +242,7 @@ def make_parallel_map_worker(
         # Use the runner's `result` key by convention; fall back to whole dict.
         result = raw["result"] if "result" in raw else raw
         slot_key = f"{_slot_prefix(output_key)}{idx}"
-        return {"values": {slot_key: result}}
+        return {"values": {slot_key: result}, "counters": counter_delta}
 
     return worker
 

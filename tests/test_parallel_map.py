@@ -307,6 +307,30 @@ def test_parallel_map_halts_when_a_worker_raises() -> None:
     assert "collect" not in finished
 
 
+def test_parallel_map_ledger_sums_llm_calls_across_workers() -> None:
+    # Each fan-out worker makes one child llm_call and runs concurrently with
+    # its siblings. LangGraph merges every worker's state update; the ledger's
+    # additive reducer must SUM their increments rather than overwrite. With
+    # three items, the workers alone contribute llm_calls_consumed == 3 (plus
+    # the seed node), so the total must be >= 3 — a last-writer-wins counter
+    # would collapse the three concurrent worker increments down to 1.
+    spec = _spec_with_parallel_map()  # three items: ["a", "b", "c"]
+    validated = validate_graph_spec(spec)
+    executor = LangGraphExecutor(
+        runners={NodeKind.LLM_CALL: _seed_for_node_then_identity(["a", "b", "c"])}
+    )
+
+    result = executor.execute(executor.compile(validated), run_id="pm-ledger")
+
+    assert result.ok is True
+    counters = result.state["counters"]
+    # seed (1) + three workers (3) = 4 llm calls consumed.
+    assert counters["llm_calls_consumed"] == 4
+    # nodes_executed counts the seed, the three worker invocations, and the
+    # reduce consumer (the dispatcher/joiner are infrastructure, not runners).
+    assert counters["nodes_executed"] == 5
+
+
 # ---------- helpers (lower) ----------
 
 

@@ -163,6 +163,24 @@ class Registry:
 
         return issues
 
+    def counts_as_llm_call_for_node(self, node: NodeSpec) -> bool:
+        """Whether executing this single node consumes one LLM call.
+
+        Mirrors the per-node logic in `count_llm_calls` (the kind's
+        `counts_as_llm_call` flag, plus `reduce`'s `llm_summarize` strategy)
+        so the runtime ledger and the planner's static estimate agree on what
+        counts. `parallel_map` is excluded here: its per-fan-out child calls
+        are counted at runtime by the worker, not by the dispatcher node.
+        """
+        definition = self._kinds.get(node.kind)
+        if definition is None:
+            return False
+        if definition.counts_as_llm_call:
+            return True
+        if node.kind == NodeKind.REDUCE:
+            return node.params.get("strategy", "concat") == "llm_summarize"
+        return False
+
     def count_llm_calls(self, nodes: list[NodeSpec]) -> int:
         total = 0
         for node in nodes:
