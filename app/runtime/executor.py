@@ -15,6 +15,11 @@ from app.runtime.state import make_initial_state
 # Resolving the import at call time avoids the import-time cycle without
 # loosening the architectural seam.
 
+# Steps-per-graph rail: every execution carries an explicit recursion_limit so
+# runaway graphs (and, once spawn_subgraph lands, runaway nests) hit a ceiling.
+_DEFAULT_RECURSION_LIMIT = 25
+_STEPS_PER_NODE = 4
+
 
 class CompiledGraph(Protocol):
     """Opaque handle for a compiled transient graph."""
@@ -110,16 +115,16 @@ class LangGraphExecutor:
         run_id: str,
     ) -> ExecutionResult:
         concrete = _coerce_compiled_graph(compiled)
-        config = _config_for(run_id) if self._checkpointer is not None else None
-        invoke_kwargs: dict[str, Any] = {}
-        if config is not None:
-            invoke_kwargs["config"] = config
-
+        config = self._invoke_config(concrete.spec, run_id)
         state = concrete.graph.invoke(
             make_initial_state(inputs=inputs, metadata={"run_id": run_id}),
-            **invoke_kwargs,
+            config=config,
         )
-        return self._build_result(concrete, state, run_id, config=config)
+        # Only the checkpointer path needs the config back for interrupt
+        # inspection (it carries the thread_id); without one there's no state to
+        # query, so don't hand it down.
+        result_config = config if self._checkpointer is not None else None
+        return self._build_result(concrete, state, run_id, config=result_config)
 
     def resume(
         self,
@@ -138,9 +143,17 @@ class LangGraphExecutor:
             )
 
         concrete = _coerce_compiled_graph(compiled)
-        config = _config_for(run_id)
+        config = self._invoke_config(concrete.spec, run_id)
         state = concrete.graph.invoke(Command(resume=event), config=config)
         return self._build_result(concrete, state, run_id, config=config)
+
+    def _invoke_config(self, spec: GraphSpec, run_id: str) -> dict[str, Any]:
+        """Build the LangGraph invoke config: an explicit recursion_limit plus,
+        when a checkpointer is wired, the thread_id needed for resume."""
+        config: dict[str, Any] = {"recursion_limit": _recursion_limit_for(spec)}
+        if self._checkpointer is not None:
+            config.update(_config_for(run_id))
+        return config
 
     def _build_result(
         self,
@@ -187,6 +200,17 @@ def _coerce_compiled_graph(compiled: CompiledGraph) -> _LangGraphCompiledGraph:
 
 def _config_for(run_id: str) -> dict[str, Any]:
     return {"configurable": {"thread_id": run_id}}
+
+
+def _recursion_limit_for(spec: GraphSpec) -> int:
+    """Explicit super-step cap for one graph's execution.
+
+    Scales with the node budget — a generous factor over node count covers
+    fan-out and branch re-entry — but never drops below LangGraph's default, so
+    small graphs keep ample headroom while runaway graphs still hit a ceiling.
+    Bounds steps per graph, not nesting depth (that is the depth budget's job).
+    """
+    return max(_DEFAULT_RECURSION_LIMIT, spec.budget.max_nodes * _STEPS_PER_NODE)
 
 
 def _inspect_pending_interrupts(

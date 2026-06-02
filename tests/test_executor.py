@@ -7,7 +7,37 @@ import pytest
 from app.compiler import GraphCompilationError
 from app.models import GraphSpec, NodeKind, TraceEventKind
 from app.registry import validate_graph_spec
-from app.runtime.executor import LangGraphExecutor
+from app.runtime.executor import LangGraphExecutor, _LangGraphCompiledGraph
+
+
+class _RecordingGraph:
+    """Test double for a compiled LangGraph: records the invoke config."""
+
+    def __init__(self) -> None:
+        self.config: dict | None = None
+
+    def invoke(self, state, *, config=None):
+        del state
+        self.config = config
+        return {}
+
+
+def test_executor_passes_recursion_limit_to_invoke(minimal_spec: GraphSpec) -> None:
+    # The executor must bound super-steps per graph with an explicit
+    # recursion_limit — the steps-per-graph half of the recursion rail. The
+    # limit must be at least the node budget so a legitimate graph isn't
+    # strangled.
+    validated = validate_graph_spec(minimal_spec)
+    recorder = _RecordingGraph()
+    compiled = _LangGraphCompiledGraph(spec=validated, graph=recorder)
+    executor = LangGraphExecutor()
+
+    executor.execute(compiled, run_id="run-reclimit")
+
+    assert recorder.config is not None
+    limit = recorder.config["recursion_limit"]
+    assert isinstance(limit, int) and limit > 0
+    assert limit >= validated.budget.max_nodes
 
 
 def test_executor_runs_validated_single_node_spec(minimal_spec: GraphSpec) -> None:

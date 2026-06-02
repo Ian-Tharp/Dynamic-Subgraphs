@@ -14,6 +14,11 @@ from app.models.node_kinds import NodeKind
 from app.registry.errors import RegistryValidationError, RegistryValidationIssue
 from app.registry.registry import Registry
 
+# Hard ceiling on a graph's declared recursion depth. Nested subgraphs may never
+# request more than this, so the recursion rail holds regardless of what a
+# planner emits. Matches the canonical design's shallow-depth guidance.
+MAX_DEPTH_CEILING = 3
+
 
 def validate_graph_spec(spec: GraphSpec, registry: Registry | None = None) -> GraphSpec:
     """
@@ -71,6 +76,18 @@ def validate_graph_spec(spec: GraphSpec, registry: Registry | None = None) -> Gr
             RegistryValidationIssue(
                 code="budget_exceeded",
                 message=f"LLM call count {llm_count} exceeds max_llm_calls {spec.budget.max_llm_calls}",
+            )
+        )
+
+    if spec.budget.max_depth > MAX_DEPTH_CEILING:
+        issues.append(
+            RegistryValidationIssue(
+                code="depth_ceiling_exceeded",
+                message=(
+                    f"max_depth {spec.budget.max_depth} exceeds the hard ceiling "
+                    f"{MAX_DEPTH_CEILING}"
+                ),
+                field="budget.max_depth",
             )
         )
 

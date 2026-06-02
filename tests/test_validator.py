@@ -7,6 +7,7 @@ import pytest
 from app.models import GraphSpec, NodeKind, NodeSpec
 from app.models.graph_spec import GraphBudget
 from app.registry import RegistryValidationError, validate_graph_spec
+from app.registry.validator import MAX_DEPTH_CEILING
 
 
 # ---------- happy path ----------
@@ -205,6 +206,35 @@ def test_budget_rejects_too_many_llm_calls(spec_factory, make_node, make_edge) -
 
     codes = {i.code for i in exc.value.issues}
     assert "budget_exceeded" in codes
+
+
+def test_budget_rejects_max_depth_above_ceiling(spec_factory, make_node, make_edge) -> None:
+    # The depth budget caps how deep nested subgraphs may ever recurse. A spec
+    # declaring max_depth above the hard ceiling must be rejected before it can
+    # run, so the recursion rail holds once spawn_subgraph exists. One over the
+    # ceiling pins the exact boundary.
+    spec = spec_factory(
+        nodes=[make_node("step", outputs=["draft"])],
+        edges=[make_edge("START", "step"), make_edge("step", "END")],
+        budget=GraphBudget(max_depth=MAX_DEPTH_CEILING + 1),
+    )
+
+    with pytest.raises(RegistryValidationError) as exc:
+        validate_graph_spec(spec)
+
+    codes = {i.code for i in exc.value.issues}
+    assert "depth_ceiling_exceeded" in codes
+
+
+def test_budget_allows_max_depth_at_ceiling(spec_factory, make_node, make_edge) -> None:
+    # The ceiling itself is allowed — the rail rejects only what exceeds it.
+    spec = spec_factory(
+        nodes=[make_node("step", outputs=["draft"])],
+        edges=[make_edge("START", "step"), make_edge("step", "END")],
+        budget=GraphBudget(max_depth=MAX_DEPTH_CEILING),
+    )
+
+    validate_graph_spec(spec)  # does not raise
 
 
 # ---------- schema versioning ----------
