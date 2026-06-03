@@ -22,9 +22,11 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      # Using major-version tags for a reliable first run; pin to commit SHAs
+      # (e.g. via dependabot or `pinact`) as a security-hardening follow-up.
+      - uses: actions/checkout@v4
       - name: Install uv
-        uses: astral-sh/setup-uv@e92bafb6253dcd438e0484186d7669ea7a8ca1cc # v6.4.3
+        uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
@@ -45,9 +47,9 @@ jobs:
     name: build + install smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@v4
       - name: Install uv
-        uses: astral-sh/setup-uv@e92bafb6253dcd438e0484186d7669ea7a8ca1cc # v6.4.3
+        uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
           python-version: "3.13"
@@ -60,7 +62,7 @@ jobs:
           /tmp/smoke/bin/python -m pip install dist/*.whl
           /tmp/smoke/bin/python -c "import dynamic_subgraphs as d; print('import ok:', sorted(d.__all__))"
       - name: Upload distributions
-        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/
