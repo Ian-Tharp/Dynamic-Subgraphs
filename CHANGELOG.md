@@ -7,7 +7,15 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
 
 ## [Unreleased]
 
+### Changed
+- Removed `mock_document_extract` from the default tool allowlist (it echoed
+  empty content, so a planner that picked it for a retrieval/compare task
+  produced a dead-end run); retrieval now routes to `web_search`. Surfaced by
+  the model-comparison eval — see `docs/evals/model-comparison-2026-06.md`.
+
 ### Added
+- `docs/evals/` — eval reports. First entry: gpt-5.4-nano vs claude-haiku-4-5
+  e2e comparison (latency / tokens / cost / quality), traced via LangSmith.
 - Public `dynamic_subgraphs` SDK facade: `DynamicSubgraphs`, `EngineConfig`,
   `Model`, `Recording`/`Artifact`, `RunResult`, `capabilities()`.
 - Model-agnostic providers: OpenAI, Anthropic, and local Ollama / LM Studio
