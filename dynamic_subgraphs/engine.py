@@ -34,10 +34,12 @@ replay; leave it at the default in production / library use.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
+
+from langchain_core.callbacks import UsageMetadataCallbackHandler
 
 from app.assembly import RunConfig, build_supervisor
 from app.models import GraphSpec
@@ -64,6 +66,12 @@ Model = ModelRef
 # Anything the engine accepts as a recording policy.
 RecordingInput = bool | Artifact | Iterable[Artifact] | Recording
 
+# Pricing for cost: {model_name: {"input_per_1m": float, "output_per_1m": float}}.
+# Keyed by the model name LangChain reports in usage_metadata (e.g.
+# "gpt-5.4-nano", "claude-haiku-4-5"). We ship no table — pricing drifts, so
+# the dev supplies it (or uses LangSmith's server-side cost).
+Pricing = Mapping[str, Mapping[str, float]]
+
 __all__ = [
     "Artifact",
     "DynamicSubgraphs",
@@ -72,6 +80,7 @@ __all__ = [
     "ModelSelection",
     "Recording",
     "RunResult",
+    "TokenUsage",
 ]
 
 
@@ -137,6 +146,71 @@ class ModelSelection:
 
 
 @dataclass
+class TokenUsage:
+    """Exact token usage for one run, read from provider-reported usage.
+
+    Sourced from LangChain's `UsageMetadataCallbackHandler` (the providers'
+    own counts — not an estimate), aggregated across every LLM call in the run
+    (planner + workers + reducers + subagents). `by_model` keeps the per-model
+    breakdown, which matters for hybrid runs that mix providers.
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    by_model: dict[str, dict[str, int]] = field(default_factory=dict)
+
+    @classmethod
+    def from_handler(cls, handler: UsageMetadataCallbackHandler) -> TokenUsage:
+        by_model: dict[str, dict[str, int]] = {}
+        ti = to = tt = 0
+        for name, usage in (handler.usage_metadata or {}).items():
+            i = int(usage.get("input_tokens", 0))
+            o = int(usage.get("output_tokens", 0))
+            t = int(usage.get("total_tokens", i + o))
+            by_model[name] = {
+                "input_tokens": i,
+                "output_tokens": o,
+                "total_tokens": t,
+            }
+            ti, to, tt = ti + i, to + o, tt + t
+        return cls(
+            input_tokens=ti, output_tokens=to, total_tokens=tt, by_model=by_model
+        )
+
+
+def _price_for(name: str, pricing: Pricing) -> Mapping[str, float] | None:
+    """Look up a model's price, tolerating dated snapshots.
+
+    Providers report the resolved model name (e.g. `gpt-5.4-nano-2026-03-17`)
+    in usage, but devs price by the alias they passed (`gpt-5.4-nano`). Match
+    exactly first, then the longest alias that is a prefix of the reported name.
+    """
+    if name in pricing:
+        return pricing[name]
+    prefixes = [k for k in pricing if name.startswith(k)]
+    return pricing[max(prefixes, key=len)] if prefixes else None
+
+
+def _compute_cost(usage: TokenUsage, pricing: Pricing | None) -> float | None:
+    """Cost in USD from a dev-supplied price book, or None if not configured.
+
+    Models present in `by_model` but absent from `pricing` are skipped (their
+    cost is simply not counted), so a partial price book still works.
+    """
+    if not pricing:
+        return None
+    total = 0.0
+    for name, u in usage.by_model.items():
+        price = _price_for(name, pricing)
+        if price is None:
+            continue
+        total += u["input_tokens"] / 1_000_000 * float(price.get("input_per_1m", 0.0))
+        total += u["output_tokens"] / 1_000_000 * float(price.get("output_per_1m", 0.0))
+    return round(total, 6)
+
+
+@dataclass
 class RunResult:
     """The outcome of one `DynamicSubgraphs.run()` call.
 
@@ -152,6 +226,10 @@ class RunResult:
             selected that artifact.
         errors: list of `{"stage": str, "type": str, "message": str}` entries
             (node-level failures additionally carry "node_id").
+        usage: exact `TokenUsage` for the run (always populated; zero for mock
+            runs). Includes a per-model breakdown.
+        cost: total USD cost, or None unless a `pricing` book was set on the
+            `EngineConfig`. (Tokens are exact and free; cost needs prices.)
 
     Use `to_dict()` for a JSON-safe view (handy for logging or handing to
     another tool/agent).
@@ -164,6 +242,8 @@ class RunResult:
     plan: GraphSpec | None = None
     artifacts: dict[str, Path] = field(default_factory=dict)
     errors: list[dict[str, Any]] = field(default_factory=list)
+    usage: TokenUsage = field(default_factory=TokenUsage)
+    cost: float | None = None
 
     @property
     def ok(self) -> bool:
@@ -185,6 +265,13 @@ class RunResult:
             ),
             "artifacts": {name: str(path) for name, path in self.artifacts.items()},
             "errors": self.errors,
+            "usage": {
+                "input_tokens": self.usage.input_tokens,
+                "output_tokens": self.usage.output_tokens,
+                "total_tokens": self.usage.total_tokens,
+                "by_model": self.usage.by_model,
+            },
+            "cost": self.cost,
         }
 
     @classmethod
@@ -194,6 +281,8 @@ class RunResult:
         *,
         runs_dir: str | Path,
         run_id: str,
+        usage: TokenUsage,
+        cost: float | None,
     ) -> RunResult:
         values: dict[str, Any] = {}
         if result.result is not None:
@@ -214,6 +303,8 @@ class RunResult:
             plan=result.validated_spec,
             artifacts=artifacts,
             errors=list(result.errors or []),
+            usage=usage,
+            cost=cost,
         )
 
 
@@ -255,6 +346,12 @@ class EngineConfig:
     runs_dir: str | Path = "runs"
     providers: ProviderRegistry | None = None
     checkpointer: Any | None = None
+    # Optional price book for cost, e.g.
+    # {"gpt-5.4-nano": {"input_per_1m": 0.2, "output_per_1m": 1.25}}.
+    # Key by the model alias you pass; it also matches the provider's dated
+    # snapshot (gpt-5.4-nano-2026-03-17) by prefix. Tokens are always exact
+    # regardless; this only enables `result.cost`.
+    pricing: Pricing | None = None
 
     def model_selection(self) -> ModelSelection:
         """The per-role `ModelSelection` this config resolves to."""
@@ -319,6 +416,7 @@ class DynamicSubgraphs:
         self._runs_dir = str(config.runs_dir)
         self._providers = config.providers or default_model_providers()
         self._checkpointer = config.checkpointer
+        self._pricing = config.pricing
 
     @property
     def config(self) -> EngineConfig:
@@ -400,14 +498,28 @@ class DynamicSubgraphs:
             recorder = NullRecorder(root_dir=Path(self._runs_dir))
         artifact_sink: Any = None if policy.emits() else CollectingArtifactSink()
 
+        # Exact token usage comes straight from the providers via LangChain's
+        # usage callback, attached to every chat model this run builds (it
+        # fires inside the executor's worker thread, where a context-manager
+        # callback wouldn't reach).
+        usage_handler = UsageMetadataCallbackHandler()
+
         supervisor = build_supervisor(
             config,
             recorder=recorder,
             checkpointer=self._checkpointer,
             model_providers=self._providers,
             artifact_sink=artifact_sink,
+            chat_callbacks=[usage_handler],
         )
         result = supervisor.run(prompt, run_id=run_id)
+
+        usage = TokenUsage.from_handler(usage_handler)
+        cost = _compute_cost(usage, self._pricing)
         return RunResult._from_supervisor(
-            result, runs_dir=self._runs_dir, run_id=run_id
+            result,
+            runs_dir=self._runs_dir,
+            run_id=run_id,
+            usage=usage,
+            cost=cost,
         )

@@ -178,7 +178,30 @@ result.response      # synthesized answer text
 result.values        # {output_key: value, ...}
 result.plan          # the generated GraphSpec
 result.artifacts     # {filename: Path} (populated only when recording is on)
+result.usage         # exact TokenUsage: input/output/total + per-model breakdown
+result.cost          # USD (None unless a pricing book is configured — see below)
 ```
+
+### Token usage & cost
+
+`result.usage` is **always** populated with the providers' own reported token
+counts (via LangChain's usage callback — exact, all providers, no estimation).
+**Cost** is opt-in: pass a `pricing` book on `EngineConfig` (we don't ship a
+price table since prices drift). Key it by the model alias — it also matches the
+provider's dated snapshot (`gpt-5.4-nano-2026-03-17`) by prefix:
+
+```python
+engine = DynamicSubgraphs(EngineConfig(
+    model=Model("openai", "gpt-5.4-nano"),
+    pricing={"gpt-5.4-nano": {"input_per_1m": 0.20, "output_per_1m": 1.25}},
+))
+r = engine.run("...")
+r.usage.total_tokens   # e.g. 3233   (exact, free)
+r.cost                 # e.g. 0.0013 (USD; None if no pricing)
+```
+
+If you already use LangSmith, it computes cost server-side too — no price book
+needed there.
 
 All engine configuration lives on `EngineConfig`: the per-role models
 (`model`, `planner_model`, `worker_model`, `reducer_model`, `subagent_model`,

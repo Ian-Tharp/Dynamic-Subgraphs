@@ -18,7 +18,9 @@ from dynamic_subgraphs import (
     ModelSelection,
     Recording,
     RunResult,
+    TokenUsage,
 )
+from dynamic_subgraphs.engine import _compute_cost
 
 # ---------- Model construction ----------
 
@@ -294,6 +296,78 @@ def test_every_artifact_is_documented_in_recipes() -> None:
         )
 
 
+# ---------- token usage + cost ----------
+
+
+def test_token_usage_from_handler_aggregates_by_model() -> None:
+    from types import SimpleNamespace
+
+    handler = SimpleNamespace(
+        usage_metadata={
+            "gpt-5.4-nano": {
+                "input_tokens": 100,
+                "output_tokens": 40,
+                "total_tokens": 140,
+            },
+            "claude-haiku-4-5": {
+                "input_tokens": 60,
+                "output_tokens": 20,
+                "total_tokens": 80,
+            },
+        }
+    )
+    usage = TokenUsage.from_handler(handler)
+
+    assert usage.input_tokens == 160
+    assert usage.output_tokens == 60
+    assert usage.total_tokens == 220
+    assert set(usage.by_model) == {"gpt-5.4-nano", "claude-haiku-4-5"}
+
+
+def test_compute_cost_from_price_book() -> None:
+    usage = TokenUsage(
+        by_model={
+            "gpt-5.4-nano": {"input_tokens": 1_000_000, "output_tokens": 1_000_000}
+        }
+    )
+    pricing = {"gpt-5.4-nano": {"input_per_1m": 0.2, "output_per_1m": 1.25}}
+    assert _compute_cost(usage, pricing) == 1.45
+
+
+def test_compute_cost_none_without_pricing() -> None:
+    usage = TokenUsage(by_model={"m": {"input_tokens": 1000, "output_tokens": 500}})
+    assert _compute_cost(usage, None) is None
+    # Unknown models are skipped (partial price book still works).
+    assert _compute_cost(usage, {"other": {"input_per_1m": 1.0}}) == 0.0
+
+
+def test_compute_cost_matches_dated_snapshot_by_alias() -> None:
+    # Providers report a dated snapshot; pricing is keyed by the alias.
+    usage = TokenUsage(
+        by_model={
+            "gpt-5.4-nano-2026-03-17": {
+                "input_tokens": 1_000_000,
+                "output_tokens": 0,
+            }
+        }
+    )
+    pricing = {"gpt-5.4-nano": {"input_per_1m": 0.2, "output_per_1m": 1.25}}
+    assert _compute_cost(usage, pricing) == 0.2
+
+
+def test_engine_mock_run_has_zero_usage_and_no_cost(tmp_path: Path) -> None:
+    engine = DynamicSubgraphs(
+        EngineConfig(model=Model("openai", "x"), planner="mock", runs_dir=tmp_path)
+    )
+    result = engine.run("compare two things")
+
+    assert isinstance(result.usage, TokenUsage)
+    assert result.usage.total_tokens == 0  # mock planner makes no LLM calls
+    assert result.cost is None  # no pricing configured
+    # usage + cost surface in the JSON-safe view too.
+    assert "usage" in result.to_dict() and "cost" in result.to_dict()
+
+
 # ---------- agent-consumability ----------
 
 
@@ -413,12 +487,16 @@ def test_engine_per_run_override_routes_to_named_provider(tmp_path: Path) -> Non
         worker_model=Model("beta", "beta-model"),
     )
 
+    # Compare by provider+model: the engine attaches a usage callback to each
+    # chat model's ref via extra_kwargs, so exact ModelRef equality won't hold.
     assert result.ok
-    assert beta.chat_refs == [ModelRef(provider="beta", model="beta-model")]
+    assert [(r.provider, r.model) for r in beta.chat_refs] == [("beta", "beta-model")]
     assert alpha.chat_refs == []  # alpha was only the (overridden) default
 
     # A subsequent run with no override falls back to the engine default.
     alpha.chat_refs.clear()
     result2 = engine.run("use the default", run_id="sdk-route-002")
     assert result2.ok
-    assert alpha.chat_refs == [ModelRef(provider="alpha", model="alpha-model")]
+    assert [(r.provider, r.model) for r in alpha.chat_refs] == [
+        ("alpha", "alpha-model")
+    ]

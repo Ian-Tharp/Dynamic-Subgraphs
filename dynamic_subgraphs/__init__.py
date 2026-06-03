@@ -30,6 +30,7 @@ from dynamic_subgraphs.engine import (
     Model,
     ModelSelection,
     RunResult,
+    TokenUsage,
 )
 from dynamic_subgraphs.recording import Artifact, Recording
 from dynamic_subgraphs.types import (
@@ -60,4 +61,5 @@ __all__ = [
     "RunResult",
     "RunStatus",
     "StructuredMethod",
+    "TokenUsage",
 ]

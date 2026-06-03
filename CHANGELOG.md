@@ -8,6 +8,10 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
 ## [Unreleased]
 
 ### Added
+- `RunResult.usage` (exact `TokenUsage` — input/output/total + per-model
+  breakdown, from the providers' own counts via LangChain's usage callback)
+  and opt-in `RunResult.cost` via an `EngineConfig(pricing=...)` book (keyed by
+  model alias; matches dated snapshots by prefix). No price table is shipped.
 - Public `dynamic_subgraphs` SDK facade: `DynamicSubgraphs`, `EngineConfig`,
   `Model`, `Recording`/`Artifact`, `RunResult`, `capabilities()`.
 - Model-agnostic providers: OpenAI, Anthropic, and local Ollama / LM Studio

@@ -10,7 +10,7 @@ reducers, and subagents.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from app.models import DynamicRunState, GraphSpec, NodeKind
@@ -136,13 +136,28 @@ def mock_llm_runner(
     return {"result": f"<mock-llm>{instruction}{suffix}</mock-llm>"}
 
 
+def _attach_callbacks(ref: ModelRef, callbacks: list[Any] | None) -> ModelRef:
+    """Return `ref` with `callbacks` merged into its chat-client kwargs.
+
+    LangChain fires callbacks attached to a model *instance* wherever that
+    model runs (including the executor's worker thread), so this is how the
+    SDK captures token usage transparently. No-op when `callbacks` is falsy.
+    """
+    if not callbacks:
+        return ref
+    extra = dict(ref.extra_kwargs)
+    extra["callbacks"] = [*extra.get("callbacks", []), *callbacks]
+    return replace(ref, extra_kwargs=extra)
+
+
 def _build_planner(
     config: RunConfig,
     *,
     model_providers: ProviderRegistry,
+    chat_callbacks: list[Any] | None = None,
 ) -> Planner:
     if config.planner == "llm":
-        ref = config.planner_ref
+        ref = _attach_callbacks(config.planner_ref, chat_callbacks)
         provider = model_providers.get(ref.provider)
         structured = provider.build_structured_output(ref, GraphSpec)
         return LLMPlanner(
@@ -160,6 +175,7 @@ def _build_runners(
     runs_dir: str,
     model_providers: ProviderRegistry,
     artifact_sink: ArtifactSink | None = None,
+    chat_callbacks: list[Any] | None = None,
 ) -> dict[NodeKind, NodeRunner]:
     sink = artifact_sink or FileArtifactSink(root_dir=runs_dir)
     emit_runner = make_emit_artifact_runner(sink)
@@ -173,6 +189,7 @@ def _build_runners(
         built: list[tuple[ModelRef, Any]] = []
 
         def chat_for(ref: ModelRef) -> Any:
+            ref = _attach_callbacks(ref, chat_callbacks)
             for known_ref, chat in built:
                 if known_ref == ref:
                     return chat
@@ -199,6 +216,7 @@ def build_supervisor(
     checkpointer: Any | None = None,
     model_providers: ProviderRegistry | None = None,
     artifact_sink: ArtifactSink | None = None,
+    chat_callbacks: list[Any] | None = None,
 ) -> Supervisor:
     """Construct a Supervisor wired for `config`.
 
@@ -206,16 +224,21 @@ def build_supervisor(
     MemorySaver) enables resume across calls for graphs with wait_for_event.
     `artifact_sink` overrides where `emit_artifact` nodes write — pass a
     `CollectingArtifactSink` (with a `NullRecorder`) for a no-files run.
+    `chat_callbacks` are attached to every chat model built (e.g. a usage
+    callback to capture token counts).
     """
 
     runs_dir = str(getattr(recorder, "root_dir", "runs"))
     providers = model_providers or default_model_providers()
-    planner = _build_planner(config, model_providers=providers)
+    planner = _build_planner(
+        config, model_providers=providers, chat_callbacks=chat_callbacks
+    )
     runners = _build_runners(
         config,
         runs_dir=runs_dir,
         model_providers=providers,
         artifact_sink=artifact_sink,
+        chat_callbacks=chat_callbacks,
     )
     executor = LangGraphExecutor(
         runners=runners,
