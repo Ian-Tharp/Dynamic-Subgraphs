@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -19,6 +20,52 @@ from app.runtime.state import make_initial_state
 # runaway graphs (and, once spawn_subgraph lands, runaway nests) hit a ceiling.
 _DEFAULT_RECURSION_LIMIT = 25
 _STEPS_PER_NODE = 4
+
+
+def _run_graph_isolated(
+    graph: Any,
+    payload: Any,
+    *,
+    config: dict[str, Any],
+    inspect_config: dict[str, Any] | None,
+) -> tuple[Any, bool, list[Any]]:
+    """Invoke a compiled graph in a dedicated thread; return state + pause info.
+
+    LangGraph (>=1.2.x) routes an `interrupt()` to the *ambient* Pregel
+    execution it discovers via a context variable. The Supervisor runs each
+    transient graph inside a node of its own static graph, and a spawn_subgraph
+    node runs a child graph inside a parent transient graph — so a naive
+    `graph.invoke(...)` lets an inner interrupt bubble up and halt the outer
+    graph (it returns with no result, stuck "pending"). A fresh thread does not
+    inherit that context variable, so the interrupt stays contained to the
+    graph that raised it.
+
+    The pending-interrupt inspection (`get_state`) must run in the **same**
+    isolated thread: called from the outer Pregel context it reports no
+    interrupts, so the pause would be lost. Returns
+    ``(state, paused, interrupt_payloads)``. Exceptions are re-raised on the
+    calling thread, preserving error behavior.
+    """
+
+    box: dict[str, Any] = {}
+
+    def _run() -> None:
+        try:
+            state = graph.invoke(payload, config=config)
+            if inspect_config is not None:
+                paused, payloads = _inspect_pending_interrupts(graph, inspect_config)
+            else:
+                paused, payloads = False, []
+            box["ok"] = (state, paused, payloads)
+        except BaseException as exc:  # noqa: BLE001 - re-raised on caller thread
+            box["error"] = exc
+
+    thread = threading.Thread(target=_run, name="ds-graph-invoke")
+    thread.start()
+    thread.join()
+    if "error" in box:
+        raise box["error"]
+    return box["ok"]
 
 
 class CompiledGraph(Protocol):
@@ -128,15 +175,18 @@ class LangGraphExecutor:
             "budget_max_llm_calls": concrete.spec.budget.max_llm_calls,
             "run_id": run_id,
         }
-        state = concrete.graph.invoke(
+        # Only the checkpointer path can be inspected for interrupts (it carries
+        # the thread_id); without one there's no persisted state to query.
+        inspect_config = config if self._checkpointer is not None else None
+        state, paused, payloads = _run_graph_isolated(
+            concrete.graph,
             make_initial_state(inputs=inputs, metadata=metadata),
             config=config,
+            inspect_config=inspect_config,
         )
-        # Only the checkpointer path needs the config back for interrupt
-        # inspection (it carries the thread_id); without one there's no state to
-        # query, so don't hand it down.
-        result_config = config if self._checkpointer is not None else None
-        return self._build_result(concrete, state, run_id, config=result_config)
+        return self._build_result(
+            concrete, state, run_id, paused=paused, interrupt_payloads=payloads
+        )
 
     def resume(
         self,
@@ -156,8 +206,15 @@ class LangGraphExecutor:
 
         concrete = _coerce_compiled_graph(compiled)
         config = self._invoke_config(concrete.spec, run_id)
-        state = concrete.graph.invoke(Command(resume=event), config=config)
-        return self._build_result(concrete, state, run_id, config=config)
+        state, paused, payloads = _run_graph_isolated(
+            concrete.graph,
+            Command(resume=event),
+            config=config,
+            inspect_config=config,
+        )
+        return self._build_result(
+            concrete, state, run_id, paused=paused, interrupt_payloads=payloads
+        )
 
     def _invoke_config(self, spec: GraphSpec, run_id: str) -> dict[str, Any]:
         """Build the LangGraph invoke config: an explicit recursion_limit plus,
@@ -173,7 +230,8 @@ class LangGraphExecutor:
         state: DynamicRunState,
         run_id: str,
         *,
-        config: dict[str, Any] | None,
+        paused: bool,
+        interrupt_payloads: list[Any],
     ) -> ExecutionResult:
         trace = RunTrace(
             run_id=run_id,
@@ -184,13 +242,6 @@ class LangGraphExecutor:
         )
         errors = state.get("errors") or []
         first_error = errors[0] if errors else None
-
-        paused = False
-        interrupt_payloads: list[Any] = []
-        if config is not None:
-            paused, interrupt_payloads = _inspect_pending_interrupts(
-                concrete.graph, config
-            )
 
         return ExecutionResult(
             state=state,
@@ -240,11 +291,14 @@ def _inspect_pending_interrupts(
         return False, []
 
     payloads: list[Any] = []
-    tasks = getattr(snapshot, "tasks", None) or ()
-    for task in tasks:
-        interrupts = getattr(task, "interrupts", None) or ()
-        for itr in interrupts:
-            value = getattr(itr, "value", itr)
-            payloads.append(value)
+    # LangGraph >=1.2.x exposes pending interrupts at the top level of the
+    # state snapshot; older versions hung them off each pending task. Prefer
+    # the top-level field, then fall back for backward compatibility.
+    for itr in getattr(snapshot, "interrupts", None) or ():
+        payloads.append(getattr(itr, "value", itr))
+    if not payloads:
+        for task in getattr(snapshot, "tasks", None) or ():
+            for itr in getattr(task, "interrupts", None) or ():
+                payloads.append(getattr(itr, "value", itr))
 
     return bool(payloads), payloads
