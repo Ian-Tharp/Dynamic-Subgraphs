@@ -12,6 +12,98 @@ validated `GraphSpec`, recording every run under `runs/<run_id>/`. The planner e
 kinds; and LangGraph types stay behind the `compiler/` and `runtime/` boundaries. An
 optional thin FastAPI layer exposes the supervisor over HTTP.
 
+## What can it build?
+
+From one prompt, the planner assembles a **transient** graph out of a small set
+of governed node kinds — `llm_call`, `tool_call`, `reduce`, `parallel_map`,
+`spawn_subagent`, `spawn_subgraph`, `wait_for_event`, `emit_artifact`. A few of
+the shapes it produces (these render in the same Mermaid the engine writes to
+`graph.mmd` for every run):
+
+**Parallel research → recommend** — fan out to independent workers, then reduce:
+
+```mermaid
+graph TD
+    START([START])
+    END([END])
+    extract_a["extract_a<br/>tool_call"]
+    extract_b["extract_b<br/>tool_call"]
+    summarize_a["summarize_a<br/>llm_call"]
+    summarize_b["summarize_b<br/>llm_call"]
+    compare["compare_and_recommend<br/>reduce"]
+    START --> extract_a
+    START --> extract_b
+    extract_a --> summarize_a
+    extract_b --> summarize_b
+    summarize_a --> compare
+    summarize_b --> compare
+    compare --> END
+```
+
+**Tool-grounded answer** — search the web, answer from it, write a report:
+
+```mermaid
+graph TD
+    START([START])
+    END([END])
+    search["web_search<br/>tool_call"]
+    answer["answer<br/>llm_call"]
+    report["report<br/>emit_artifact"]
+    START --> search
+    search --> answer
+    answer --> report
+    report --> END
+```
+
+**Human-in-the-loop** — pause for an external event, then resume:
+
+```mermaid
+graph TD
+    START([START])
+    END([END])
+    draft["draft_proposal<br/>llm_call"]
+    review["await_approval<br/>wait_for_event"]
+    finalize["finalize<br/>llm_call"]
+    START --> draft
+    draft --> review
+    review --> finalize
+    finalize --> END
+```
+
+**Nested composition** — a node plans and runs a bounded child graph:
+
+```mermaid
+graph TD
+    START([START])
+    END([END])
+    plan["plan<br/>llm_call"]
+    investigate["investigate<br/>spawn_subgraph"]
+    synthesize["synthesize<br/>reduce"]
+    START --> plan
+    plan --> investigate
+    investigate --> synthesize
+    synthesize --> END
+```
+
+### How it works
+
+Those graphs are *transient* — planned, validated, run, and recorded per
+request. The only thing that stays fixed is the **Supervisor**, a stable host
+graph that governs every run:
+
+```mermaid
+graph LR
+    START([prompt]) --> plan
+    plan["plan<br/>(GraphSpec)"] --> validate
+    validate["validate<br/>(registry)"] --> run
+    run["compile & run<br/>(transient graph)"] --> record
+    record["record<br/>(runs/&lt;id&gt;/)"] --> respond
+    respond([result]) --> END([END])
+```
+
+The planner emits a **plan, never code**; the compiler only instantiates
+registry-approved node kinds; and every run — success or failure — is recorded.
+
 ## Install
 
 With [uv](https://docs.astral.sh/uv/) (recommended):
