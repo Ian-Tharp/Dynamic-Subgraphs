@@ -57,7 +57,6 @@ DEFAULT_FAKE_TOOLS: dict[str, ToolCallable] = {
     "web_search": _echo_tool("web_search"),
     "policy_lookup": _echo_tool("policy_lookup"),
     "create_follow_up_task": _echo_tool("create_follow_up_task"),
-    "mock_document_extract": _echo_tool("mock_document_extract"),
 }
 
 
