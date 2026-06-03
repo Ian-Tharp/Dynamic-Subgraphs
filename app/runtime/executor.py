@@ -57,7 +57,7 @@ def _run_graph_isolated(
             else:
                 paused, payloads = False, []
             box["ok"] = (state, paused, payloads)
-        except BaseException as exc:  # noqa: BLE001 - re-raised on caller thread
+        except BaseException as exc:  # re-raised on the caller thread below
             box["error"] = exc
 
     thread = threading.Thread(target=_run, name="ds-graph-invoke")
