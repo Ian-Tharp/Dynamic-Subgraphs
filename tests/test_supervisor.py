@@ -14,11 +14,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import pytest
-
-from app.models import GraphSpec, NodeKind, NodeSpec
-from app.models.graph_spec import EdgeSpec
-from app.recording import FileRecorder, RunRecord
+from app.models import GraphSpec, NodeKind
+from app.recording import FileRecorder
 from app.runtime import LangGraphExecutor
 from app.supervisor import (
     Planner,
@@ -26,7 +23,6 @@ from app.supervisor import (
     Supervisor,
     SupervisorResult,
 )
-
 
 # ---------- helpers ----------
 
@@ -55,9 +51,7 @@ def _make_supervisor(
 # ---------- happy path ----------
 
 
-def test_supervisor_runs_full_pipeline(
-    minimal_spec: GraphSpec, tmp_path: Path
-) -> None:
+def test_supervisor_runs_full_pipeline(minimal_spec: GraphSpec, tmp_path: Path) -> None:
     sup = _make_supervisor(minimal_spec, tmp_path)
 
     result = sup.run("any prompt", run_id="sup-ok-1")
@@ -160,12 +154,11 @@ def test_supervisor_handles_compile_failure(
     # to the supervisor's executor seam. The supervisor's compile node
     # catches GraphCompilationError and classifies as compile_failed.
     from app.compiler import GraphCompilationError
-    from app.runtime import GraphExecutor
 
     class _BrokenExecutor:
         """Executor whose compile() always raises GraphCompilationError."""
 
-        def compile(self, spec):  # noqa: ARG002
+        def compile(self, spec):
             raise GraphCompilationError("simulated compile failure")
 
         def execute(self, *args, **kwargs):  # pragma: no cover

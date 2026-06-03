@@ -55,6 +55,58 @@ def test_run_config_normalizes_legacy_openai_planner() -> None:
     assert config.model_ref == ModelRef(provider="openai", model="gpt-5.4-nano")
 
 
+def test_run_config_roles_default_to_base_ref() -> None:
+    config = RunConfig(planner="llm", provider="openai", model="m", strict_runners=True)
+    base = ModelRef(provider="openai", model="m")
+
+    # Every role collapses to the base ref when nothing is overridden.
+    assert config.worker_ref == base
+    assert config.planner_ref == base
+    assert config.reducer_ref == base
+    assert config.subagent_ref == base
+    assert config.judge_ref == base
+    assert config.providers_in_use() == ("openai",)
+
+
+def test_run_config_unset_roles_fall_back_to_worker() -> None:
+    worker = ModelRef(provider="anthropic", model="claude-haiku-4-5")
+    config = RunConfig(
+        planner="llm",
+        provider="openai",
+        model="gpt-5.4-nano",
+        strict_runners=True,
+        worker_model=worker,
+    )
+
+    # planner/reducer/subagent inherit the worker override, not the base ref.
+    assert config.worker_ref == worker
+    assert config.reducer_ref == worker
+    assert config.subagent_ref == worker
+    assert config.planner_ref == worker
+    # base ref is still the explicit provider+model.
+    assert config.base_ref == ModelRef(provider="openai", model="gpt-5.4-nano")
+
+
+def test_run_config_mixed_providers_reported_in_use() -> None:
+    config = RunConfig(
+        planner="llm",
+        provider="openai",
+        model="gpt-5.4-nano",
+        strict_runners=True,
+        planner_model=ModelRef(provider="openai", model="gpt-5.4-nano"),
+        worker_model=ModelRef(provider="anthropic", model="claude-haiku-4-5"),
+        subagent_model=ModelRef(provider="ollama", model="llama3.1"),
+    )
+
+    assert config.providers_in_use() == ("anthropic", "ollama", "openai")
+
+
+def test_run_config_mock_planner_uses_no_providers() -> None:
+    config = RunConfig(planner="mock", model="gpt-5.4-nano", strict_runners=False)
+
+    assert config.providers_in_use() == ()
+
+
 class _FakeChatModel:
     def invoke(self, messages: list, /, **kwargs: Any) -> Any:
         del messages, kwargs
@@ -119,3 +171,54 @@ def test_build_supervisor_llm_uses_registered_provider(tmp_path: Path) -> None:
     assert result.status == "ok"
     assert result.result is not None
     assert result.result.state["values"]["final"] == "fake provider response"
+
+
+class _TrackingProvider:
+    """Records which refs each role asked it to build."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.chat_refs: list[ModelRef] = []
+        self.structured_refs: list[ModelRef] = []
+
+    def required_env_vars(self) -> tuple[str, ...]:
+        return ()
+
+    def build_chat(self, ref: ModelRef) -> _FakeChatModel:
+        self.chat_refs.append(ref)
+        return _FakeChatModel()
+
+    def build_structured_output(self, ref: ModelRef, schema: type) -> Any:
+        self.structured_refs.append(ref)
+        return _FakeStructuredPlanner()
+
+
+def test_build_supervisor_routes_each_role_to_its_provider(tmp_path: Path) -> None:
+    recorder = FileRecorder(root_dir=tmp_path, overwrite=True)
+    alpha = _TrackingProvider("alpha")
+    beta = _TrackingProvider("beta")
+    registry = ProviderRegistry()
+    registry.register(alpha)
+    registry.register(beta)
+
+    # Planner explicitly on alpha; workers/reducers/subagents on beta.
+    # (planner_model must be set explicitly — unset roles fall back to worker,
+    # so overriding only worker would route the planner to beta too.)
+    config = RunConfig(
+        planner="llm",
+        provider="alpha",
+        model="alpha-model",
+        strict_runners=True,
+        planner_model=ModelRef(provider="alpha", model="alpha-model"),
+        worker_model=ModelRef(provider="beta", model="beta-model"),
+    )
+
+    build_supervisor(config, recorder=recorder, model_providers=registry)
+
+    # Planner used alpha for structured output; chat roles used beta.
+    assert alpha.structured_refs == [ModelRef(provider="alpha", model="alpha-model")]
+    assert alpha.chat_refs == []
+    beta_ref = ModelRef(provider="beta", model="beta-model")
+    # worker, reducer, subagent all resolve to the same beta ref -> built once.
+    assert beta.chat_refs == [beta_ref]
+    assert config.providers_in_use() == ("alpha", "beta")

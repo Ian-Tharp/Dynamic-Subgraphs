@@ -37,7 +37,6 @@ from typing import Any, Protocol
 from app.models import DynamicRunState
 from app.runtime.runners import NodeRunner, ToolCallable, run_tool_call
 
-
 # ---------- search provider abstraction ----------
 
 
@@ -100,7 +99,7 @@ class TavilySearchProvider:
         try:
             with urllib.request.urlopen(request, timeout=self._timeout) as response:
                 raw = response.read(2_000_000)
-        except Exception as exc:  # noqa: BLE001 - normalize provider failures
+        except Exception as exc:
             raise RuntimeError(
                 f"Tavily search failed for query {query!r}: {exc}"
             ) from exc
@@ -146,7 +145,9 @@ class DuckDuckGoSearchProvider:
 
     def search(self, query: str, *, limit: int) -> dict[str, Any]:
         if not query:
-            raise ValueError("DuckDuckGoSearchProvider.search requires a non-empty query")
+            raise ValueError(
+                "DuckDuckGoSearchProvider.search requires a non-empty query"
+            )
 
         params = urllib.parse.urlencode(
             {
@@ -165,7 +166,7 @@ class DuckDuckGoSearchProvider:
         try:
             with urllib.request.urlopen(request, timeout=self._timeout) as response:
                 raw = response.read(1_000_000)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise RuntimeError(
                 f"DuckDuckGo search failed for query {query!r}: {exc}"
             ) from exc
@@ -492,7 +493,7 @@ def _bing_search(
     try:
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             raw = response.read(2_000_000)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise RuntimeError(
             f"bing search fallback failed for query {query!r}: {exc}"
         ) from exc
@@ -573,7 +574,7 @@ def _clean_bing_url(url: str) -> str:
         padded = payload + "=" * ((4 - len(payload) % 4) % 4)
         try:
             return base64.urlsafe_b64decode(padded).decode("utf-8")
-        except Exception:  # noqa: BLE001
+        except Exception:
             return url
     return url
 

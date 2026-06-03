@@ -103,16 +103,19 @@ class Registry:
     ) -> list[RegistryValidationIssue]:
         issues: list[RegistryValidationIssue] = []
 
-        if definition.requires_tool_allowlist and isinstance(params, ToolCallParams):
-            if params.tool_name not in self._tools:
-                issues.append(
-                    RegistryValidationIssue(
-                        code="tool_not_allowlisted",
-                        message=f"Tool '{params.tool_name}' is not in the registry allowlist",
-                        node_id=node.id,
-                        field="params.tool_name",
-                    )
+        if (
+            definition.requires_tool_allowlist
+            and isinstance(params, ToolCallParams)
+            and params.tool_name not in self._tools
+        ):
+            issues.append(
+                RegistryValidationIssue(
+                    code="tool_not_allowlisted",
+                    message=f"Tool '{params.tool_name}' is not in the registry allowlist",
+                    node_id=node.id,
+                    field="params.tool_name",
                 )
+            )
 
         if isinstance(params, ParallelMapParams):
             child = params
@@ -150,16 +153,18 @@ class Registry:
         if definition.requires_subagent_allowlist:
             from app.registry.params import SpawnSubagentParams
 
-            if isinstance(params, SpawnSubagentParams):
-                if params.agent_name not in self._subagents:
-                    issues.append(
-                        RegistryValidationIssue(
-                            code="subagent_not_allowlisted",
-                            message=f"Subagent '{params.agent_name}' is not allowlisted",
-                            node_id=node.id,
-                            field="params.agent_name",
-                        )
+            if (
+                isinstance(params, SpawnSubagentParams)
+                and params.agent_name not in self._subagents
+            ):
+                issues.append(
+                    RegistryValidationIssue(
+                        code="subagent_not_allowlisted",
+                        message=f"Subagent '{params.agent_name}' is not allowlisted",
+                        node_id=node.id,
+                        field="params.agent_name",
                     )
+                )
 
         return issues
 

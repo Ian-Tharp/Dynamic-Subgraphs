@@ -34,7 +34,7 @@ class AppContext:
     model_providers: ProviderRegistry
 
     @classmethod
-    def build(cls, settings: ApiSettings) -> "AppContext":
+    def build(cls, settings: ApiSettings) -> AppContext:
         from langgraph.checkpoint.memory import MemorySaver
 
         return cls(
@@ -85,7 +85,8 @@ def resolve_run_config(
     )
     if config.planner == "llm":
         try:
-            ctx.model_providers.require_credentials(config.provider)
+            for provider_name in config.providers_in_use():
+                ctx.model_providers.require_credentials(provider_name)
         except KeyError as exc:
             raise BadRequest(str(exc)) from exc
         except MissingModelProviderCredential as exc:

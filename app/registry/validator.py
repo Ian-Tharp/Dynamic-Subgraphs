@@ -24,7 +24,7 @@ def validate_graph_spec(spec: GraphSpec, registry: Registry | None = None) -> Gr
     """
     Validate a GraphSpec against registry policy and graph topology (v1 §9).
     Returns a copy with normalized node params on success.
-  """
+    """
     reg = registry or Registry()
     issues: list[RegistryValidationIssue] = []
 
@@ -102,7 +102,9 @@ def validate_graph_spec(spec: GraphSpec, registry: Registry | None = None) -> Gr
     return spec.model_copy(update={"nodes": normalized_nodes})
 
 
-def _validate_edges(spec: GraphSpec, node_ids: set[str]) -> list[RegistryValidationIssue]:
+def _validate_edges(
+    spec: GraphSpec, node_ids: set[str]
+) -> list[RegistryValidationIssue]:
     issues: list[RegistryValidationIssue] = []
     adj: dict[str, list[str]] = defaultdict(list)
 
@@ -307,7 +309,9 @@ def _validate_branches(
     return issues
 
 
-def _detect_cycles(spec: GraphSpec, node_ids: set[str]) -> list[RegistryValidationIssue]:
+def _detect_cycles(
+    spec: GraphSpec, node_ids: set[str]
+) -> list[RegistryValidationIssue]:
     adj: dict[str, list[str]] = defaultdict(list)
     for edge in spec.edges:
         src, dst = edge.from_, edge.to

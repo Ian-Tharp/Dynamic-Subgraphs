@@ -52,9 +52,7 @@ def build_supervisor_graph(
     graph.add_conditional_edges(
         "validate", _route_after_validate, ["execute", "respond"]
     )
-    graph.add_conditional_edges(
-        "execute", _route_after_execute, ["record", "respond"]
-    )
+    graph.add_conditional_edges("execute", _route_after_execute, ["record", "respond"])
     graph.add_edge("record", "respond")
     graph.add_edge("respond", END)
 
@@ -92,7 +90,7 @@ def _make_plan_node(planner: Planner):
     def plan(state: SupervisorState) -> SupervisorState:
         try:
             spec = planner(state["prompt"])
-        except Exception as exc:  # noqa: BLE001 - planner failures must not crash supervisor
+        except Exception as exc:
             return {
                 "status": _PLAN_FAILED,
                 "errors": [
@@ -176,7 +174,7 @@ def _make_record_node(recorder: Recorder):
                 result=state["result"],
                 prompt=state.get("prompt"),
             )
-        except Exception as exc:  # noqa: BLE001 - record errors must not crash supervisor
+        except Exception as exc:
             return {
                 "status": "record_failed",
                 "errors": [
@@ -209,9 +207,7 @@ def _make_respond_node():
                 str(p.get("event_type")) if isinstance(p, dict) else str(p)
                 for p in payloads
             ]
-            label = (
-                ", ".join(event_types) if event_types else "an unspecified event"
-            )
+            label = ", ".join(event_types) if event_types else "an unspecified event"
             response = (
                 f"Run paused waiting for {label}. "
                 f"Call supervisor.resume(run_id, event=...) to continue."

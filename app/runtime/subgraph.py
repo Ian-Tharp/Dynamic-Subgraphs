@@ -13,6 +13,7 @@ checks as any other graph. Only *composition* goes fractal.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -90,7 +91,7 @@ def build_spawn_subgraph_runner(
     the wrapper maps to the node's declared output, if any).
     """
 
-    def _runner(state: "Mapping[str, Any]", params: "Mapping[str, Any]") -> dict[str, Any]:
+    def _runner(state: Mapping[str, Any], params: Mapping[str, Any]) -> dict[str, Any]:
         metadata = state.get("metadata", {}) or {}
         depth = int(metadata.get("graph_depth", 0))
         if depth + 1 > depth_ceiling:
@@ -104,7 +105,9 @@ def build_spawn_subgraph_runner(
         sub_goal = str(params["sub_goal"])
         inputs_from = list(params.get("inputs_from", []) or [])
         parent_values = state.get("values", {}) or {}
-        inputs = {key: parent_values[key] for key in inputs_from if key in parent_values}
+        inputs = {
+            key: parent_values[key] for key in inputs_from if key in parent_values
+        }
 
         # Clamp the child to the parent's remaining LLM budget so a nest can't
         # outspend the root. `consumed` already reflects earlier siblings' rolled
@@ -112,7 +115,9 @@ def build_spawn_subgraph_runner(
         budget_max = metadata.get("budget_max_llm_calls")
         max_llm_calls: int | None = None
         if budget_max is not None:
-            consumed = int((state.get("counters", {}) or {}).get("llm_calls_consumed", 0))
+            consumed = int(
+                (state.get("counters", {}) or {}).get("llm_calls_consumed", 0)
+            )
             max_llm_calls = max(0, int(budget_max) - consumed)
 
         child_run_id = f"{parent_run_id}__sg_{name}"
@@ -147,10 +152,10 @@ def build_spawn_subgraph_runner(
 
 def make_child_launcher(
     *,
-    planner: "Callable[[str], GraphSpec]",
-    executor: "GraphExecutor",
-    registry: "Registry | None" = None,
-    recorder: "Recorder | None" = None,
+    planner: Callable[[str], GraphSpec],
+    executor: GraphExecutor,
+    registry: Registry | None = None,
+    recorder: Recorder | None = None,
 ) -> ChildLauncher:
     """Build a `ChildLauncher` from a planner + executor.
 
@@ -184,7 +189,7 @@ def make_child_launcher(
         if replay_of is not None and recorder is not None:
             try:
                 spec = recorder.load_validated_spec(replay_of)
-            except Exception:  # noqa: BLE001 - missing/unreadable spec -> re-plan
+            except Exception:
                 spec = None
         if spec is None:
             spec = planner(sub_goal)
@@ -218,12 +223,10 @@ def make_child_launcher(
             initial_metadata=child_metadata,
         )
         if recorder is not None:
-            try:
+            with contextlib.suppress(Exception):
                 recorder.record(
                     spec=validated, result=result, prompt=sub_goal, overwrite=True
                 )
-            except Exception:  # noqa: BLE001 - recording must not break the child run
-                pass
         state = result.state or {}
         return ChildResult(
             values=dict(state.get("values", {}) or {}),

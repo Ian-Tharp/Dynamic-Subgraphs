@@ -3,10 +3,8 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any
-
-import time
 from collections.abc import Iterator
+from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import (

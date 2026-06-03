@@ -27,9 +27,11 @@ from app.runtime.llm_runner import (
     build_openai_reduce_runner,
 )
 from app.runtime.model_providers import (
+    AnthropicModelProvider,
     MissingModelProviderCredential,
     ModelProvider,
     ModelRef,
+    OllamaModelProvider,
     OpenAIModelProvider,
     ProviderRegistry,
     default_model_providers,
@@ -75,6 +77,7 @@ from app.runtime.wrappers import make_node_wrapper, map_outputs
 __all__ = [
     "DEFAULT_FAKE_TOOLS",
     "DEFAULT_SUBAGENT_SYSTEM_PROMPTS",
+    "AnthropicModelProvider",
     "ArtifactSink",
     "ChatLlmRunner",
     "CollectingArtifactSink",
@@ -89,6 +92,7 @@ __all__ = [
     "ModelProvider",
     "ModelRef",
     "NodeRunner",
+    "OllamaModelProvider",
     "OpenAILlmRunner",
     "OpenAIModelProvider",
     "ProviderRegistry",
@@ -106,8 +110,8 @@ __all__ = [
     "build_openai_spawn_subagent_runner",
     "build_openai_subagents",
     "create_follow_up_task_tool",
-    "default_runners",
     "default_model_providers",
+    "default_runners",
     "document_extract_tool",
     "make_emit_artifact_runner",
     "make_initial_state",

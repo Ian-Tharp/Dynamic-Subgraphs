@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -19,7 +18,6 @@ from app.runtime import (
     run_emit_artifact,
 )
 from app.runtime.state import make_initial_state
-
 
 # ---------- echo default ----------
 
@@ -53,12 +51,8 @@ def test_default_run_emit_artifact_returns_fake_reference_without_io(
 def test_collecting_sink_captures_emissions_with_content() -> None:
     sink = CollectingArtifactSink()
 
-    sink.emit(
-        name="report-1", artifact_type="report", content="hello", run_id="r1"
-    )
-    sink.emit(
-        name="data", artifact_type="file", content={"k": 1}, run_id="r1"
-    )
+    sink.emit(name="report-1", artifact_type="report", content="hello", run_id="r1")
+    sink.emit(name="data", artifact_type="file", content={"k": 1}, run_id="r1")
 
     assert len(sink.emitted) == 2
     assert sink.emitted[0]["name"] == "report-1"

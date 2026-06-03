@@ -100,9 +100,7 @@ def make_parallel_map_dispatcher(
                     decoded = None
             if isinstance(decoded, list):
                 items = decoded
-            elif isinstance(decoded, dict) and isinstance(
-                decoded.get(over_key), list
-            ):
+            elif isinstance(decoded, dict) and isinstance(decoded.get(over_key), list):
                 items = decoded[over_key]
 
         if not isinstance(items, list):
@@ -177,9 +175,7 @@ def make_parallel_map_worker(
         # Build a clean view of state.values for the child runner: strip
         # internal `_pm_*` keys and expose the current item under "item".
         child_values = {
-            key: value
-            for key, value in values.items()
-            if not key.startswith("_pm_")
+            key: value for key, value in values.items() if not key.startswith("_pm_")
         }
         child_values["item"] = item
         child_state: DynamicRunState = dict(state)
@@ -204,15 +200,13 @@ def make_parallel_map_worker(
 
         try:
             raw = child_runner(child_state, local_params)
-        except Exception as exc:  # noqa: BLE001 - normalize and halt
+        except Exception as exc:
             return Command(
                 update={
                     "errors": [
                         {
                             "node_id": node.id,
-                            "message": (
-                                f"parallel_map worker [{idx}] failed: {exc}"
-                            ),
+                            "message": (f"parallel_map worker [{idx}] failed: {exc}"),
                             "type": type(exc).__name__,
                         }
                     ],
@@ -240,7 +234,7 @@ def make_parallel_map_worker(
             )
 
         # Use the runner's `result` key by convention; fall back to whole dict.
-        result = raw["result"] if "result" in raw else raw
+        result = raw.get("result", raw)
         slot_key = f"{_slot_prefix(output_key)}{idx}"
         return {"values": {slot_key: result}, "counters": counter_delta}
 
@@ -292,7 +286,7 @@ def make_parallel_map_joiner(
         for key, value in values.items():
             if not key.startswith(slot_prefix):
                 continue
-            suffix = key[len(slot_prefix):]
+            suffix = key[len(slot_prefix) :]
             try:
                 idx = int(suffix)
             except ValueError:

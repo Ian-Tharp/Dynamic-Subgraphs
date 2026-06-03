@@ -5,7 +5,6 @@ checkpointer enforcement, and supervisor integration.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
@@ -17,7 +16,6 @@ from app.recording import FileRecorder
 from app.registry import validate_graph_spec
 from app.runtime import LangGraphExecutor
 from app.supervisor import StaticPlanner, Supervisor
-
 
 # ---------- runners ----------
 
@@ -191,9 +189,7 @@ def test_executor_resume_completes_run_and_routes_payload_into_output() -> None:
     compiled = executor.compile(validated)
 
     executor.execute(compiled, run_id="wait-resume")
-    result = executor.resume(
-        compiled, run_id="wait-resume", event="the user's reply"
-    )
+    result = executor.resume(compiled, run_id="wait-resume", event="the user's reply")
 
     assert result.paused is False
     assert result.ok is True
@@ -217,16 +213,12 @@ def test_executor_handles_two_sequential_waits() -> None:
     assert first.paused is True
     assert first.interrupt_payloads[0]["event_type"] == "first_event"
 
-    second = executor.resume(
-        compiled, run_id="two-waits", event="payload-A"
-    )
+    second = executor.resume(compiled, run_id="two-waits", event="payload-A")
     assert second.paused is True
     assert second.interrupt_payloads[0]["event_type"] == "second_event"
     assert second.state["values"]["event_a"] == "payload-A"
 
-    third = executor.resume(
-        compiled, run_id="two-waits", event="payload-B"
-    )
+    third = executor.resume(compiled, run_id="two-waits", event="payload-B")
     assert third.paused is False
     assert third.ok is True
     assert third.state["values"]["event_a"] == "payload-A"
@@ -294,9 +286,7 @@ def test_supervisor_resume_completes_paused_run(tmp_path: Path) -> None:
 
     assert resumed.status == "ok"
     assert resumed.result is not None and resumed.result.ok is True
-    assert (
-        resumed.result.state["values"]["user_answer"] == "the user's answer"
-    )
+    assert resumed.result.state["values"]["user_answer"] == "the user's answer"
 
 
 def test_supervisor_resume_with_unknown_run_id_reports_resume_failed(

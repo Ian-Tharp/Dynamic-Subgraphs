@@ -23,7 +23,7 @@ class ApiSettings:
     max_sync_seconds: int = 120
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str] | None = None) -> "ApiSettings":
+    def from_env(cls, env: Mapping[str, str] | None = None) -> ApiSettings:
         env = os.environ if env is None else env
         planner = env.get("DS_PLANNER", "mock")
         provider = env.get("DS_PROVIDER", "openai").strip().lower() or "openai"
