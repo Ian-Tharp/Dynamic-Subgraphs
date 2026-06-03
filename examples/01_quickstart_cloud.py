@@ -1,6 +1,8 @@
 """Cloud quickstart — OpenAI as planner + worker.
 
 Prerequisite: OPENAI_API_KEY in your environment (or a local `.env`).
+Tip: install `dynamic-subgraphs[openai,cost]` and `result.cost` is computed
+automatically (otherwise it's None — `result.usage` tokens are always exact).
 
 Run:
     uv run python examples/01_quickstart_cloud.py
@@ -14,14 +16,7 @@ load_dotenv()
 
 from dynamic_subgraphs import DynamicSubgraphs, EngineConfig, Model
 
-engine = DynamicSubgraphs(
-    EngineConfig(
-        model=Model("openai", "gpt-5.4-nano"),
-        # Optional: enable result.cost. Prices per 1M tokens — verify against
-        # your account / the provider's current pricing.
-        pricing={"gpt-5.4-nano": {"input_per_1m": 0.20, "output_per_1m": 1.25}},
-    )
-)
+engine = DynamicSubgraphs(EngineConfig(model=Model("openai", "gpt-5.4-nano")))
 result = engine.run(
     "Compare solar and wind power for a small town and recommend one, briefly."
 )
