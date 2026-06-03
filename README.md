@@ -14,13 +14,22 @@ optional thin FastAPI layer exposes the supervisor over HTTP.
 
 ## Install
 
+With [uv](https://docs.astral.sh/uv/) (recommended):
+
 ```bash
-pip install dynamic-subgraphs                 # slim core (engine only)
-pip install "dynamic-subgraphs[openai]"       # + OpenAI provider
-pip install "dynamic-subgraphs[anthropic]"    # + Anthropic provider
-pip install "dynamic-subgraphs[ollama]"       # + local Ollama provider
-pip install "dynamic-subgraphs[api]"          # + FastAPI HTTP surface
-pip install "dynamic-subgraphs[all]"          # everything
+uv add dynamic-subgraphs                 # slim core (engine only)
+uv add "dynamic-subgraphs[openai]"       # + OpenAI provider
+uv add "dynamic-subgraphs[anthropic]"    # + Anthropic provider
+uv add "dynamic-subgraphs[ollama]"       # + local Ollama provider
+uv add "dynamic-subgraphs[api]"          # + FastAPI HTTP surface
+uv add "dynamic-subgraphs[all]"          # everything
+```
+
+Or with pip:
+
+```bash
+pip install dynamic-subgraphs
+pip install "dynamic-subgraphs[openai]"  # same extras: anthropic, ollama, api, all
 ```
 
 The core install is intentionally light (`langgraph`, `langchain-core`,

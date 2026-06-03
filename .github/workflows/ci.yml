@@ -19,8 +19,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Full Python-version coverage on Linux + Windows; one macOS smoke job
+        # on the latest Python (pure-Python lib — mac behaves like Linux, this
+        # just catches path/filesystem quirks without tripling the matrix).
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13"]
+        include:
+          - os: macos-latest
+            python-version: "3.13"
     steps:
       # Using major-version tags for a reliable first run; pin to commit SHAs
       # (e.g. via dependabot or `pinact`) as a security-hardening follow-up.
