@@ -18,20 +18,16 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Protocol
 
-from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.compiler import COMPILER_HANDLED_KINDS
 from app.models import GraphSpec, NodeKind
 from app.registry import (
-    DEFAULT_SUBAGENTS,
-    DEFAULT_TOOLS,
     Registry,
     RegistryValidationError,
     validate_graph_spec,
 )
 from app.runtime.runners import default_runners
-
 
 PLANNER_SYSTEM_PROMPT = """\
 You are the graph planner for a dynamic subgraphs runtime. Given a user

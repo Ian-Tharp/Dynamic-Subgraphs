@@ -344,7 +344,7 @@ class LlmIterationDecider:
 
         try:
             payload = self._model.invoke(messages)
-        except Exception as exc:  # noqa: BLE001 - judge must fail closed
+        except Exception as exc:
             return IterationDecision(
                 action="fail",
                 reason=f"LlmIterationDecider model call failed: {exc}",

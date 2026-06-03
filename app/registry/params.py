@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.models.node_kinds import NodeKind
 
+
 class LlmCallParams(BaseModel):
     instruction: str = Field(min_length=1)
     model: str | None = None

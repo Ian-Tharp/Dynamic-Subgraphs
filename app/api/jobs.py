@@ -91,7 +91,7 @@ class Job:
     def is_terminal(self) -> bool:
         return self.state.value in _TERMINAL
 
-    def subscribe(self) -> "Queue[dict[str, Any]]":
+    def subscribe(self) -> Queue[dict[str, Any]]:
         q: Queue[dict[str, Any]] = Queue()
         with self._lock:
             q.put({"type": "status", "state": self.state.value})
@@ -125,7 +125,7 @@ class JobStore:
     def _wrap(job: Job, fn: Callable[[Job], None]) -> None:
         try:
             fn(job)
-        except Exception as exc:  # noqa: BLE001 - background boundary must fail closed
+        except Exception as exc:
             job.fail(f"{type(exc).__name__}: {exc}")
 
     def get(self, run_id: str) -> Job | None:

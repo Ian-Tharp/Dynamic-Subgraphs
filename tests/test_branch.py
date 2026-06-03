@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
 from app.models import GraphSpec, NodeKind, NodeSpec
 from app.models.graph_spec import EdgeSpec
 from app.registry import RegistryValidationError, validate_graph_spec
 from app.runtime import LangGraphExecutor
-
 
 # ---------- runners used in tests ----------
 

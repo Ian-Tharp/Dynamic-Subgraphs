@@ -16,7 +16,9 @@ def test_spec_round_trips_through_json_with_aliases(minimal_spec: GraphSpec) -> 
     assert restored.edges[0].from_ == "START"
 
 
-def test_edge_serializes_with_from_alias_not_from_underscore(minimal_spec: GraphSpec) -> None:
+def test_edge_serializes_with_from_alias_not_from_underscore(
+    minimal_spec: GraphSpec,
+) -> None:
     raw = minimal_spec.model_dump(mode="json", by_alias=True)
 
     edge_keys = set(raw["edges"][0].keys())

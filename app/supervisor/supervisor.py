@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -126,7 +127,7 @@ class Supervisor:
                         previous_steps=tuple(steps),
                     )
                 )
-            except Exception as exc:  # noqa: BLE001 - meta-loop must fail closed
+            except Exception as exc:
                 decision = IterationDecision(
                     action="fail",
                     reason=f"Iteration decider failed: {exc}",
@@ -202,17 +203,15 @@ class Supervisor:
             raise RuntimeError("iterative supervisor exited without a result")
 
         if record_chain and hasattr(self._recorder, "record_chain"):
-            try:
+            # Intentionally best-effort: a chain that ran shouldn't be
+            # invalidated because persistence failed. The per-iteration
+            # records are already on disk.
+            with contextlib.suppress(Exception):
                 self._recorder.record_chain(
                     outcome,
                     original_prompt=prompt,
                     overwrite=True,
                 )
-            except Exception:  # noqa: BLE001 - chain recording must not affect outcome
-                # Intentionally swallowed: a chain that ran shouldn't be
-                # invalidated because persistence failed. The per-iteration
-                # records are already on disk.
-                pass
 
         return outcome
 
@@ -244,13 +243,12 @@ class Supervisor:
 
         try:
             spec = self._recorder.load_validated_spec(run_id)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return SupervisorResult(
                 run_id=effective_new_run_id,
                 status="replay_failed",
                 response=(
-                    f"Replay halted: could not load recorded spec for "
-                    f"{run_id!r}: {exc}"
+                    f"Replay halted: could not load recorded spec for {run_id!r}: {exc}"
                 ),
                 validated_spec=None,
                 result=None,
@@ -266,7 +264,7 @@ class Supervisor:
 
         try:
             compiled = self._executor.compile(spec)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return SupervisorResult(
                 run_id=effective_new_run_id,
                 status="replay_failed",
@@ -292,7 +290,7 @@ class Supervisor:
                 run_id=effective_new_run_id,
                 initial_metadata={"replay_of": run_id},
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return SupervisorResult(
                 run_id=effective_new_run_id,
                 status="replay_failed",
@@ -313,7 +311,7 @@ class Supervisor:
         record: RunRecord | None = None
         try:
             record = self._recorder.record(spec=spec, result=result, prompt=None)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             errors.append(
                 {
                     "stage": "replay_record",
@@ -386,7 +384,7 @@ class Supervisor:
 
         try:
             spec = self._recorder.load_validated_spec(run_id)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             errors.append(
                 {
                     "stage": "resume_load_spec",
@@ -398,8 +396,7 @@ class Supervisor:
                 run_id=run_id,
                 status="resume_failed",
                 response=(
-                    f"Resume halted: could not load recorded spec for "
-                    f"{run_id!r}: {exc}"
+                    f"Resume halted: could not load recorded spec for {run_id!r}: {exc}"
                 ),
                 validated_spec=None,
                 result=None,
@@ -409,7 +406,7 @@ class Supervisor:
 
         try:
             compiled = self._executor.compile(spec)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             errors.append(
                 {
                     "stage": "resume_compile",
@@ -429,7 +426,7 @@ class Supervisor:
 
         try:
             result = self._executor.resume(compiled, run_id=run_id, event=event)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             errors.append(
                 {
                     "stage": "resume_execute",
@@ -455,7 +452,7 @@ class Supervisor:
                 prompt=None,
                 overwrite=True,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             errors.append(
                 {
                     "stage": "resume_record",
@@ -489,15 +486,14 @@ class Supervisor:
             status = "execution_failed"
             response = f"Resumed run failed: {result.error or 'unknown error'}"
 
-        if errors:
-            # Record-step failures don't change the underlying status, but they
-            # surface in the errors list and influence the response.
-            if status == "ok":
-                status = "record_failed"
-                response = (
-                    "Run resumed but the new state could not be persisted: "
-                    f"{errors[-1]['message']}"
-                )
+        # Record-step failures don't change the underlying status, but they
+        # surface in the errors list and influence the response.
+        if errors and status == "ok":
+            status = "record_failed"
+            response = (
+                "Run resumed but the new state could not be persisted: "
+                f"{errors[-1]['message']}"
+            )
 
         return SupervisorResult(
             run_id=run_id,

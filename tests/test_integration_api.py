@@ -29,10 +29,13 @@ _ENABLED = os.environ.get("DS_RUN_INTEGRATION") == "1" and bool(
     os.environ.get("OPENAI_API_KEY")
 )
 
-pytestmark = pytest.mark.skipif(
-    not _ENABLED,
-    reason="set DS_RUN_INTEGRATION=1 (and OPENAI_API_KEY) to run real-call e2e",
-)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        not _ENABLED,
+        reason="set DS_RUN_INTEGRATION=1 (and OPENAI_API_KEY) to run real-call e2e",
+    ),
+]
 
 MODEL = os.environ.get("DS_MODEL", "gpt-5.4-nano")
 
@@ -50,7 +53,9 @@ def _openai(prompt: str, **extra) -> dict:
     return body
 
 
-def _poll_until_terminal(client: TestClient, run_id: str, timeout: float = 120.0) -> dict:
+def _poll_until_terminal(
+    client: TestClient, run_id: str, timeout: float = 120.0
+) -> dict:
     deadline = time.monotonic() + timeout
     last: dict = {}
     while time.monotonic() < deadline:
@@ -65,7 +70,9 @@ def test_real_sync_run_uses_real_model(tmp_path: Path) -> None:
     client = _client(tmp_path)
     resp = client.post(
         "/runs",
-        json=_openai("Compare SQLite and DuckDB for local analytics; recommend one.", mode="sync"),
+        json=_openai(
+            "Compare SQLite and DuckDB for local analytics; recommend one.", mode="sync"
+        ),
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -81,7 +88,11 @@ def test_real_async_run_completes(tmp_path: Path) -> None:
     client = _client(tmp_path)
     resp = client.post(
         "/runs",
-        json=_openai("Summarize two vector-index approaches and recommend one.", mode="async", run_id="it-async"),
+        json=_openai(
+            "Summarize two vector-index approaches and recommend one.",
+            mode="async",
+            run_id="it-async",
+        ),
     )
     assert resp.status_code == 202
     final = _poll_until_terminal(client, "it-async")

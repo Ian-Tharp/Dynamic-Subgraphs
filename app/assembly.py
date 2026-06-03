@@ -13,20 +13,21 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from app.models import DynamicRunState, NodeKind
+from app.models import DynamicRunState, GraphSpec, NodeKind
 from app.recording import Recorder
 from app.runtime import (
+    ArtifactSink,
     ChatLlmRunner,
     FileArtifactSink,
     LangGraphExecutor,
     LlmReduceRunner,
     ModelRef,
     NodeRunner,
-    make_emit_artifact_runner,
-    make_spawn_subagent_runner,
     build_grounded_tool_runner,
     build_llm_subagents,
     default_model_providers,
+    make_emit_artifact_runner,
+    make_spawn_subagent_runner,
 )
 from app.runtime.model_providers import ProviderRegistry
 from app.runtime.subgraph import build_spawn_subgraph_runner, make_child_launcher
@@ -36,7 +37,6 @@ from app.supervisor import (
     StaticPlanner,
     Supervisor,
 )
-from app.models import GraphSpec
 
 _LLM_REDUCE_STRATEGIES = {"concat", "merge_dict", "llm_summarize"}
 PlannerMode = Literal["mock", "llm", "openai"]
@@ -44,12 +44,24 @@ PlannerMode = Literal["mock", "llm", "openai"]
 
 @dataclass(frozen=True)
 class RunConfig:
-    """Resolved per-run configuration shared by CLI and API."""
+    """Resolved per-run configuration shared by CLI and API.
+
+    `provider` + `model` define the *base* model used for every role. Any
+    role can be overridden with a `ModelRef` (mixing providers — e.g. an
+    OpenAI planner with Anthropic workers); unset roles fall back to the
+    worker model, which itself falls back to the base ref. This is the
+    provider-neutral seam the SDK facade will expose per role.
+    """
 
     planner: PlannerMode
     model: str
     strict_runners: bool
     provider: str = "openai"
+    planner_model: ModelRef | None = None
+    worker_model: ModelRef | None = None
+    reducer_model: ModelRef | None = None
+    subagent_model: ModelRef | None = None
+    judge_model: ModelRef | None = None
 
     def __post_init__(self) -> None:
         planner = self.planner
@@ -65,8 +77,51 @@ class RunConfig:
         object.__setattr__(self, "provider", provider)
 
     @property
-    def model_ref(self) -> ModelRef:
+    def base_ref(self) -> ModelRef:
         return ModelRef(provider=self.provider, model=self.model)
+
+    # `model_ref` is retained as an alias of `base_ref` for existing callers
+    # (API deps, iteration decider) that pass a single ref.
+    @property
+    def model_ref(self) -> ModelRef:
+        return self.base_ref
+
+    @property
+    def worker_ref(self) -> ModelRef:
+        return self.worker_model or self.base_ref
+
+    @property
+    def planner_ref(self) -> ModelRef:
+        return self.planner_model or self.worker_ref
+
+    @property
+    def reducer_ref(self) -> ModelRef:
+        return self.reducer_model or self.worker_ref
+
+    @property
+    def subagent_ref(self) -> ModelRef:
+        return self.subagent_model or self.worker_ref
+
+    @property
+    def judge_ref(self) -> ModelRef:
+        return self.judge_model or self.worker_ref
+
+    def providers_in_use(self) -> tuple[str, ...]:
+        """Distinct provider names this config will actually build.
+
+        Empty for the mock planner (token-free). Callers use this to check
+        credentials for every provider a multi-provider run touches.
+        """
+
+        if self.planner == "mock":
+            return ()
+        names = {
+            self.planner_ref.provider,
+            self.worker_ref.provider,
+            self.reducer_ref.provider,
+            self.subagent_ref.provider,
+        }
+        return tuple(sorted(names))
 
 
 def mock_llm_runner(
@@ -87,8 +142,9 @@ def _build_planner(
     model_providers: ProviderRegistry,
 ) -> Planner:
     if config.planner == "llm":
-        provider = model_providers.get(config.provider)
-        structured = provider.build_structured_output(config.model_ref, GraphSpec)
+        ref = config.planner_ref
+        provider = model_providers.get(ref.provider)
+        structured = provider.build_structured_output(ref, GraphSpec)
         return LLMPlanner(
             structured,
             executable_reduce_strategies=_LLM_REDUCE_STRATEGIES,
@@ -103,17 +159,31 @@ def _build_runners(
     *,
     runs_dir: str,
     model_providers: ProviderRegistry,
+    artifact_sink: ArtifactSink | None = None,
 ) -> dict[NodeKind, NodeRunner]:
-    emit_runner = make_emit_artifact_runner(FileArtifactSink(root_dir=runs_dir))
+    sink = artifact_sink or FileArtifactSink(root_dir=runs_dir)
+    emit_runner = make_emit_artifact_runner(sink)
     runners: dict[NodeKind, NodeRunner] = {NodeKind.EMIT_ARTIFACT: emit_runner}
 
     if config.planner == "llm":
-        provider = model_providers.get(config.provider)
-        chat_model = provider.build_chat(config.model_ref)
-        runners[NodeKind.LLM_CALL] = ChatLlmRunner(chat_model)
-        runners[NodeKind.REDUCE] = LlmReduceRunner(chat_model)
+        # Build one chat model per distinct role ref, sharing a client when
+        # two roles resolve to the same provider+model (the common case).
+        # ModelRef carries an extra_kwargs dict, so it isn't hashable — memoize
+        # by equality against a small list rather than a dict key.
+        built: list[tuple[ModelRef, Any]] = []
+
+        def chat_for(ref: ModelRef) -> Any:
+            for known_ref, chat in built:
+                if known_ref == ref:
+                    return chat
+            chat = model_providers.get(ref.provider).build_chat(ref)
+            built.append((ref, chat))
+            return chat
+
+        runners[NodeKind.LLM_CALL] = ChatLlmRunner(chat_for(config.worker_ref))
+        runners[NodeKind.REDUCE] = LlmReduceRunner(chat_for(config.reducer_ref))
         runners[NodeKind.SPAWN_SUBAGENT] = make_spawn_subagent_runner(
-            build_llm_subagents(chat_model=chat_model)
+            build_llm_subagents(chat_model=chat_for(config.subagent_ref))
         )
         runners[NodeKind.TOOL_CALL] = build_grounded_tool_runner()
     else:
@@ -128,17 +198,25 @@ def build_supervisor(
     recorder: Recorder,
     checkpointer: Any | None = None,
     model_providers: ProviderRegistry | None = None,
+    artifact_sink: ArtifactSink | None = None,
 ) -> Supervisor:
     """Construct a Supervisor wired for `config`.
 
     `recorder` is the persistence target. `checkpointer` (e.g. a shared
     MemorySaver) enables resume across calls for graphs with wait_for_event.
+    `artifact_sink` overrides where `emit_artifact` nodes write — pass a
+    `CollectingArtifactSink` (with a `NullRecorder`) for a no-files run.
     """
 
     runs_dir = str(getattr(recorder, "root_dir", "runs"))
     providers = model_providers or default_model_providers()
     planner = _build_planner(config, model_providers=providers)
-    runners = _build_runners(config, runs_dir=runs_dir, model_providers=providers)
+    runners = _build_runners(
+        config,
+        runs_dir=runs_dir,
+        model_providers=providers,
+        artifact_sink=artifact_sink,
+    )
     executor = LangGraphExecutor(
         runners=runners,
         checkpointer=checkpointer,

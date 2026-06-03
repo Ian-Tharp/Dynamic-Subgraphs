@@ -1,0 +1,31 @@
+# Run: uv run pre-commit install
+# Local hooks call the project's own ruff/mypy (via uv) so versions never drift
+# from pyproject. Standard hygiene hooks come from pre-commit-hooks.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types: [python]
+      - id: mypy
+        name: mypy (public package, strict)
+        entry: uv run mypy dynamic_subgraphs
+        language: system
+        pass_filenames: false
+        files: ^dynamic_subgraphs/

@@ -64,7 +64,7 @@ def make_node_wrapper(
             # errors — let them propagate so a pause is honored, never
             # mislabeled as a NODE_ERROR by the generic handler below.
             raise
-        except Exception as exc:  # noqa: BLE001 - normalize all runtime failures
+        except Exception as exc:
             duration_ms = round((perf_counter() - started_perf) * 1000, 3)
             failed = TraceEvent(
                 kind=TraceEventKind.NODE_ERROR,
@@ -100,7 +100,9 @@ def make_node_wrapper(
         # running a whole child graph) via the reserved `__spend__` key; fold it
         # into this node's ledger delta so nested cost rolls up to the parent.
         counters = node_counter_delta(counts_as_llm_call)
-        extra_spend = raw_outputs.get("__spend__") if isinstance(raw_outputs, Mapping) else None
+        extra_spend = (
+            raw_outputs.get("__spend__") if isinstance(raw_outputs, Mapping) else None
+        )
         if extra_spend:
             counters = add_counters(counters, dict(extra_spend))
         return {

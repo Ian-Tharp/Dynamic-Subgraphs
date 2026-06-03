@@ -42,8 +42,16 @@ def _state(*, values=None, graph_depth=0, run_id="root"):
 def test_runner_runs_child_and_hands_back_its_values() -> None:
     captured: dict = {}
 
-    def launcher(sub_goal, *, run_id, graph_depth, parent_run_id, inputs,
-                 max_llm_calls=None, replay_of=None):
+    def launcher(
+        sub_goal,
+        *,
+        run_id,
+        graph_depth,
+        parent_run_id,
+        inputs,
+        max_llm_calls=None,
+        replay_of=None,
+    ):
         captured.update(
             sub_goal=sub_goal,
             run_id=run_id,
@@ -79,8 +87,16 @@ def test_runner_pins_child_to_original_recorded_spec_during_replay() -> None:
     # still running the child under the NEW (replay) parent's id.
     captured: dict = {}
 
-    def launcher(sub_goal, *, run_id, graph_depth, parent_run_id, inputs,
-                 max_llm_calls=None, replay_of=None):
+    def launcher(
+        sub_goal,
+        *,
+        run_id,
+        graph_depth,
+        parent_run_id,
+        inputs,
+        max_llm_calls=None,
+        replay_of=None,
+    ):
         captured.update(run_id=run_id, replay_of=replay_of)
         return ChildResult(values={}, counters={}, status="ok")
 
@@ -132,10 +148,18 @@ def test_launcher_plans_and_runs_a_child(tmp_path) -> None:
 
     child = _child_spec(
         "child",
-        nodes=[NodeSpec(id="step", kind=NodeKind.LLM_CALL, outputs=["draft"],
-                        params={"instruction": "hi"})],
-        edges=[EdgeSpec.model_validate({"from": "START", "to": "step"}),
-               EdgeSpec.model_validate({"from": "step", "to": "END"})],
+        nodes=[
+            NodeSpec(
+                id="step",
+                kind=NodeKind.LLM_CALL,
+                outputs=["draft"],
+                params={"instruction": "hi"},
+            )
+        ],
+        edges=[
+            EdgeSpec.model_validate({"from": "START", "to": "step"}),
+            EdgeSpec.model_validate({"from": "step", "to": "END"}),
+        ],
     )
 
     def planner(sub_goal):
@@ -168,10 +192,18 @@ def test_launcher_records_child_run_with_lineage(tmp_path) -> None:
 
     child = _child_spec(
         "child",
-        nodes=[NodeSpec(id="step", kind=NodeKind.LLM_CALL, outputs=["draft"],
-                        params={"instruction": "hi"})],
-        edges=[EdgeSpec.model_validate({"from": "START", "to": "step"}),
-               EdgeSpec.model_validate({"from": "step", "to": "END"})],
+        nodes=[
+            NodeSpec(
+                id="step",
+                kind=NodeKind.LLM_CALL,
+                outputs=["draft"],
+                params={"instruction": "hi"},
+            )
+        ],
+        edges=[
+            EdgeSpec.model_validate({"from": "START", "to": "step"}),
+            EdgeSpec.model_validate({"from": "step", "to": "END"}),
+        ],
     )
 
     def planner(sub_goal):
@@ -184,15 +216,22 @@ def test_launcher_records_child_run_with_lineage(tmp_path) -> None:
 
     recorder = FileRecorder(tmp_path)
     executor = LangGraphExecutor(runners={NodeKind.LLM_CALL: echo})
-    launcher = make_child_launcher(planner=planner, executor=executor, recorder=recorder)
+    launcher = make_child_launcher(
+        planner=planner, executor=executor, recorder=recorder
+    )
 
     launcher(
-        "any goal", run_id="parent__sg_c", graph_depth=1, parent_run_id="parent",
+        "any goal",
+        run_id="parent__sg_c",
+        graph_depth=1,
+        parent_run_id="parent",
         inputs={},
     )
 
     child_dir = tmp_path / "parent__sg_c"
-    assert (child_dir / "spec.json").exists()  # child spec persisted (replay foundation)
+    assert (
+        child_dir / "spec.json"
+    ).exists()  # child spec persisted (replay foundation)
     out = json.loads((child_dir / "output.json").read_text(encoding="utf-8"))
     assert out["metadata"]["parent_run_id"] == "parent"
     assert out["metadata"]["graph_depth"] == 1
@@ -208,17 +247,33 @@ def test_launcher_pins_recorded_child_spec_on_replay(tmp_path) -> None:
 
     spec_a = _child_spec(
         "child-a",
-        nodes=[NodeSpec(id="step", kind=NodeKind.LLM_CALL, outputs=["out"],
-                        params={"instruction": "alpha"})],
-        edges=[EdgeSpec.model_validate({"from": "START", "to": "step"}),
-               EdgeSpec.model_validate({"from": "step", "to": "END"})],
+        nodes=[
+            NodeSpec(
+                id="step",
+                kind=NodeKind.LLM_CALL,
+                outputs=["out"],
+                params={"instruction": "alpha"},
+            )
+        ],
+        edges=[
+            EdgeSpec.model_validate({"from": "START", "to": "step"}),
+            EdgeSpec.model_validate({"from": "step", "to": "END"}),
+        ],
     )
     spec_b = _child_spec(
         "child-b",
-        nodes=[NodeSpec(id="step", kind=NodeKind.LLM_CALL, outputs=["out"],
-                        params={"instruction": "beta"})],
-        edges=[EdgeSpec.model_validate({"from": "START", "to": "step"}),
-               EdgeSpec.model_validate({"from": "step", "to": "END"})],
+        nodes=[
+            NodeSpec(
+                id="step",
+                kind=NodeKind.LLM_CALL,
+                outputs=["out"],
+                params={"instruction": "beta"},
+            )
+        ],
+        edges=[
+            EdgeSpec.model_validate({"from": "START", "to": "step"}),
+            EdgeSpec.model_validate({"from": "step", "to": "END"}),
+        ],
     )
     calls = {"n": 0}
 
@@ -234,7 +289,9 @@ def test_launcher_pins_recorded_child_spec_on_replay(tmp_path) -> None:
 
     recorder = FileRecorder(tmp_path)
     executor = LangGraphExecutor(runners={NodeKind.LLM_CALL: echo})
-    launcher = make_child_launcher(planner=planner, executor=executor, recorder=recorder)
+    launcher = make_child_launcher(
+        planner=planner, executor=executor, recorder=recorder
+    )
 
     # Original run: plans spec_a and records it under X__sg_c.
     r1 = launcher("g", run_id="X__sg_c", graph_depth=1, parent_run_id="X", inputs={})
@@ -243,8 +300,14 @@ def test_launcher_pins_recorded_child_spec_on_replay(tmp_path) -> None:
 
     # Replay: pin to the recorded original child spec; the planner (which would
     # now hand back spec_b) must NOT be consulted.
-    r2 = launcher("g", run_id="Y__sg_c", graph_depth=1, parent_run_id="Y", inputs={},
-                  replay_of="X__sg_c")
+    r2 = launcher(
+        "g",
+        run_id="Y__sg_c",
+        graph_depth=1,
+        parent_run_id="Y",
+        inputs={},
+        replay_of="X__sg_c",
+    )
     assert r2.values["out"] == "alpha"  # reused recorded spec_a, not spec_b
     assert calls["n"] == 1  # planner not called again during replay
 
@@ -254,10 +317,15 @@ def test_launcher_bans_wait_for_event_in_children() -> None:
 
     child = _child_spec(
         "waiter",
-        nodes=[NodeSpec(id="w", kind=NodeKind.WAIT_FOR_EVENT,
-                        params={"event_type": "human"})],
-        edges=[EdgeSpec.model_validate({"from": "START", "to": "w"}),
-               EdgeSpec.model_validate({"from": "w", "to": "END"})],
+        nodes=[
+            NodeSpec(
+                id="w", kind=NodeKind.WAIT_FOR_EVENT, params={"event_type": "human"}
+            )
+        ],
+        edges=[
+            EdgeSpec.model_validate({"from": "START", "to": "w"}),
+            EdgeSpec.model_validate({"from": "w", "to": "END"}),
+        ],
     )
 
     def planner(sub_goal):
@@ -275,10 +343,18 @@ def test_launcher_seeds_graph_depth_into_child(tmp_path) -> None:
 
     child = _child_spec(
         "child",
-        nodes=[NodeSpec(id="step", kind=NodeKind.LLM_CALL, outputs=["depth_seen"],
-                        params={"instruction": "x"})],
-        edges=[EdgeSpec.model_validate({"from": "START", "to": "step"}),
-               EdgeSpec.model_validate({"from": "step", "to": "END"})],
+        nodes=[
+            NodeSpec(
+                id="step",
+                kind=NodeKind.LLM_CALL,
+                outputs=["depth_seen"],
+                params={"instruction": "x"},
+            )
+        ],
+        edges=[
+            EdgeSpec.model_validate({"from": "START", "to": "step"}),
+            EdgeSpec.model_validate({"from": "step", "to": "END"}),
+        ],
     )
 
     seen: dict = {}
@@ -313,8 +389,9 @@ def test_node_wrapper_reraises_graph_interrupt_instead_of_swallowing() -> None:
 
     from app.runtime.wrappers import make_node_wrapper
 
-    node = NodeSpec(id="n", kind=NodeKind.LLM_CALL, outputs=["o"],
-                    params={"instruction": "x"})
+    node = NodeSpec(
+        id="n", kind=NodeKind.LLM_CALL, outputs=["o"], params={"instruction": "x"}
+    )
 
     def interrupting_runner(state, params):
         del state, params
@@ -338,10 +415,18 @@ def test_spawn_subgraph_end_to_end_merges_child_output_into_parent() -> None:
 
     child = _child_spec(
         "child",
-        nodes=[NodeSpec(id="answer", kind=NodeKind.LLM_CALL, outputs=["child_out"],
-                        params={"instruction": "hello"})],
-        edges=[EdgeSpec.model_validate({"from": "START", "to": "answer"}),
-               EdgeSpec.model_validate({"from": "answer", "to": "END"})],
+        nodes=[
+            NodeSpec(
+                id="answer",
+                kind=NodeKind.LLM_CALL,
+                outputs=["child_out"],
+                params={"instruction": "hello"},
+            )
+        ],
+        edges=[
+            EdgeSpec.model_validate({"from": "START", "to": "answer"}),
+            EdgeSpec.model_validate({"from": "answer", "to": "END"}),
+        ],
     )
 
     def child_planner(sub_goal):
@@ -360,11 +445,18 @@ def test_spawn_subgraph_end_to_end_merges_child_output_into_parent() -> None:
 
     parent = _child_spec(
         "parent",
-        nodes=[NodeSpec(id="spawn", kind=NodeKind.SPAWN_SUBGRAPH,
-                        outputs=["child_report"],
-                        params={"sub_goal": "do the child thing", "name": "c"})],
-        edges=[EdgeSpec.model_validate({"from": "START", "to": "spawn"}),
-               EdgeSpec.model_validate({"from": "spawn", "to": "END"})],
+        nodes=[
+            NodeSpec(
+                id="spawn",
+                kind=NodeKind.SPAWN_SUBGRAPH,
+                outputs=["child_report"],
+                params={"sub_goal": "do the child thing", "name": "c"},
+            )
+        ],
+        edges=[
+            EdgeSpec.model_validate({"from": "START", "to": "spawn"}),
+            EdgeSpec.model_validate({"from": "spawn", "to": "END"}),
+        ],
     )
     validated = validate_graph_spec(parent)
     result = executor.execute(executor.compile(validated), run_id="parent")
@@ -385,14 +477,25 @@ def test_spawn_subgraph_rolls_up_child_spend_into_parent_ledger() -> None:
     child = _child_spec(
         "child",
         nodes=[
-            NodeSpec(id="a", kind=NodeKind.LLM_CALL, outputs=["a"],
-                     params={"instruction": "A"}),
-            NodeSpec(id="b", kind=NodeKind.LLM_CALL, inputs=["a"], outputs=["b"],
-                     params={"instruction": "B"}),
+            NodeSpec(
+                id="a",
+                kind=NodeKind.LLM_CALL,
+                outputs=["a"],
+                params={"instruction": "A"},
+            ),
+            NodeSpec(
+                id="b",
+                kind=NodeKind.LLM_CALL,
+                inputs=["a"],
+                outputs=["b"],
+                params={"instruction": "B"},
+            ),
         ],
-        edges=[EdgeSpec.model_validate({"from": "START", "to": "a"}),
-               EdgeSpec.model_validate({"from": "a", "to": "b"}),
-               EdgeSpec.model_validate({"from": "b", "to": "END"})],
+        edges=[
+            EdgeSpec.model_validate({"from": "START", "to": "a"}),
+            EdgeSpec.model_validate({"from": "a", "to": "b"}),
+            EdgeSpec.model_validate({"from": "b", "to": "END"}),
+        ],
     )
 
     def child_planner(sub_goal):
@@ -411,10 +514,18 @@ def test_spawn_subgraph_rolls_up_child_spend_into_parent_ledger() -> None:
 
     parent = _child_spec(
         "parent",
-        nodes=[NodeSpec(id="spawn", kind=NodeKind.SPAWN_SUBGRAPH, outputs=["rep"],
-                        params={"sub_goal": "g", "name": "c"})],
-        edges=[EdgeSpec.model_validate({"from": "START", "to": "spawn"}),
-               EdgeSpec.model_validate({"from": "spawn", "to": "END"})],
+        nodes=[
+            NodeSpec(
+                id="spawn",
+                kind=NodeKind.SPAWN_SUBGRAPH,
+                outputs=["rep"],
+                params={"sub_goal": "g", "name": "c"},
+            )
+        ],
+        edges=[
+            EdgeSpec.model_validate({"from": "START", "to": "spawn"}),
+            EdgeSpec.model_validate({"from": "spawn", "to": "END"}),
+        ],
     )
     result = executor.execute(executor.compile(validate_graph_spec(parent)), run_id="p")
 
@@ -433,14 +544,25 @@ def test_spawn_subgraph_clamps_child_budget_to_parent_remaining() -> None:
     child = _child_spec(
         "child",
         nodes=[
-            NodeSpec(id="a", kind=NodeKind.LLM_CALL, outputs=["a"],
-                     params={"instruction": "A"}),
-            NodeSpec(id="b", kind=NodeKind.LLM_CALL, inputs=["a"], outputs=["b"],
-                     params={"instruction": "B"}),
+            NodeSpec(
+                id="a",
+                kind=NodeKind.LLM_CALL,
+                outputs=["a"],
+                params={"instruction": "A"},
+            ),
+            NodeSpec(
+                id="b",
+                kind=NodeKind.LLM_CALL,
+                inputs=["a"],
+                outputs=["b"],
+                params={"instruction": "B"},
+            ),
         ],
-        edges=[EdgeSpec.model_validate({"from": "START", "to": "a"}),
-               EdgeSpec.model_validate({"from": "a", "to": "b"}),
-               EdgeSpec.model_validate({"from": "b", "to": "END"})],
+        edges=[
+            EdgeSpec.model_validate({"from": "START", "to": "a"}),
+            EdgeSpec.model_validate({"from": "a", "to": "b"}),
+            EdgeSpec.model_validate({"from": "b", "to": "END"}),
+        ],
     )
 
     def child_planner(sub_goal):
@@ -459,10 +581,18 @@ def test_spawn_subgraph_clamps_child_budget_to_parent_remaining() -> None:
 
     parent = _child_spec(
         "parent",
-        nodes=[NodeSpec(id="spawn", kind=NodeKind.SPAWN_SUBGRAPH, outputs=["rep"],
-                        params={"sub_goal": "g", "name": "c"})],
-        edges=[EdgeSpec.model_validate({"from": "START", "to": "spawn"}),
-               EdgeSpec.model_validate({"from": "spawn", "to": "END"})],
+        nodes=[
+            NodeSpec(
+                id="spawn",
+                kind=NodeKind.SPAWN_SUBGRAPH,
+                outputs=["rep"],
+                params={"sub_goal": "g", "name": "c"},
+            )
+        ],
+        edges=[
+            EdgeSpec.model_validate({"from": "START", "to": "spawn"}),
+            EdgeSpec.model_validate({"from": "spawn", "to": "END"}),
+        ],
         budget=GraphBudget(max_llm_calls=1),
     )
     result = executor.execute(executor.compile(validate_graph_spec(parent)), run_id="p")
@@ -481,24 +611,48 @@ def test_supervisor_replay_pins_nested_child_to_recorded_spec(tmp_path) -> None:
 
     parent = _child_spec(
         "parent",
-        nodes=[NodeSpec(id="spawn", kind=NodeKind.SPAWN_SUBGRAPH, outputs=["rep"],
-                        params={"sub_goal": "child goal", "name": "c"})],
-        edges=[EdgeSpec.model_validate({"from": "START", "to": "spawn"}),
-               EdgeSpec.model_validate({"from": "spawn", "to": "END"})],
+        nodes=[
+            NodeSpec(
+                id="spawn",
+                kind=NodeKind.SPAWN_SUBGRAPH,
+                outputs=["rep"],
+                params={"sub_goal": "child goal", "name": "c"},
+            )
+        ],
+        edges=[
+            EdgeSpec.model_validate({"from": "START", "to": "spawn"}),
+            EdgeSpec.model_validate({"from": "spawn", "to": "END"}),
+        ],
     )
     child_a = _child_spec(
         "child-a",
-        nodes=[NodeSpec(id="step", kind=NodeKind.LLM_CALL, outputs=["out"],
-                        params={"instruction": "alpha"})],
-        edges=[EdgeSpec.model_validate({"from": "START", "to": "step"}),
-               EdgeSpec.model_validate({"from": "step", "to": "END"})],
+        nodes=[
+            NodeSpec(
+                id="step",
+                kind=NodeKind.LLM_CALL,
+                outputs=["out"],
+                params={"instruction": "alpha"},
+            )
+        ],
+        edges=[
+            EdgeSpec.model_validate({"from": "START", "to": "step"}),
+            EdgeSpec.model_validate({"from": "step", "to": "END"}),
+        ],
     )
     child_b = _child_spec(
         "child-b",
-        nodes=[NodeSpec(id="step", kind=NodeKind.LLM_CALL, outputs=["out"],
-                        params={"instruction": "beta"})],
-        edges=[EdgeSpec.model_validate({"from": "START", "to": "step"}),
-               EdgeSpec.model_validate({"from": "step", "to": "END"})],
+        nodes=[
+            NodeSpec(
+                id="step",
+                kind=NodeKind.LLM_CALL,
+                outputs=["out"],
+                params={"instruction": "beta"},
+            )
+        ],
+        edges=[
+            EdgeSpec.model_validate({"from": "START", "to": "step"}),
+            EdgeSpec.model_validate({"from": "step", "to": "END"}),
+        ],
     )
     child_calls = {"n": 0}
 

@@ -236,7 +236,7 @@ def _inspect_pending_interrupts(
     """
     try:
         snapshot = graph.get_state(config)
-    except Exception:  # noqa: BLE001 - getter failures shouldn't crash result building
+    except Exception:
         return False, []
 
     payloads: list[Any] = []

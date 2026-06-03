@@ -20,7 +20,6 @@ from app.models import GraphSpec, NodeKind, NodeSpec
 from app.models.graph_spec import EdgeSpec
 from app.supervisor.llm_planner import LLMPlanner, PlannerError
 
-
 # ---------- fake model ----------
 
 
@@ -114,9 +113,7 @@ def test_first_invocation_includes_system_and_human_messages() -> None:
 
 
 def test_planner_retries_and_recovers(monkeypatch) -> None:
-    model = FakeStructuredModel(
-        [_invalid_spec_dangling_edge(), _valid_spec()]
-    )
+    model = FakeStructuredModel([_invalid_spec_dangling_edge(), _valid_spec()])
     planner = LLMPlanner(model, max_retries=2)
 
     spec = planner("prompt")
@@ -178,7 +175,4 @@ def test_widened_reduce_strategies_advertise_llm_summarize() -> None:
         executable_reduce_strategies={"concat", "merge_dict", "llm_summarize"},
     )
 
-    assert (
-        'one of ["concat", "llm_summarize", "merge_dict"]'
-        in planner._system_prompt
-    )
+    assert 'one of ["concat", "llm_summarize", "merge_dict"]' in planner._system_prompt

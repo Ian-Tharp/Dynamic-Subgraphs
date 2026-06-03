@@ -389,6 +389,7 @@ def test_llm_decider_defers_paused_runs_to_fallback_without_calling_model(
 ) -> None:
     """A paused run is unambiguous — the framework handles it. Don't waste tokens."""
     from langgraph.checkpoint.memory import MemorySaver
+
     from app.models import NodeSpec
     from app.models.graph_spec import EdgeSpec
 
@@ -642,9 +643,7 @@ def test_chain_record_load_missing_raises_filenotfound(tmp_path: Path) -> None:
         recorder.load_chain("no-such-chain")
 
 
-def test_chain_record_can_be_disabled(
-    minimal_spec: GraphSpec, tmp_path: Path
-) -> None:
+def test_chain_record_can_be_disabled(minimal_spec: GraphSpec, tmp_path: Path) -> None:
     sup = _make_supervisor(minimal_spec, tmp_path)
 
     sup.run_iteratively(
@@ -666,8 +665,9 @@ def test_chain_recording_failure_does_not_break_the_returned_result(
 
     class _BrokenChainRecorder:
         def record(self, **kwargs):
-            from app.recording.recorder import RunRecord
             from pathlib import Path
+
+            from app.recording.recorder import RunRecord
 
             return RunRecord(
                 run_id=kwargs["result"].trace.run_id,
@@ -687,9 +687,7 @@ def test_chain_recording_failure_does_not_break_the_returned_result(
         recorder=_BrokenChainRecorder(),
     )
 
-    result = sup.run_iteratively(
-        "task", run_id="chain-broken-record", max_iterations=1
-    )
+    result = sup.run_iteratively("task", run_id="chain-broken-record", max_iterations=1)
 
     assert result.status == "ok"
     assert len(result.steps) == 1

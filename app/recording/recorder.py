@@ -79,13 +79,141 @@ class Recorder(Protocol):
 
     def record_chain(
         self,
-        result: "IterativeSupervisorResult",
+        result: IterativeSupervisorResult,
         *,
         original_prompt: str,
         overwrite: bool | None = None,
     ) -> ChainRecord:
         """Persist a meta-loop chain's metadata, decisions, and gap progression."""
         ...
+
+
+@dataclass(frozen=True)
+class ArtifactContext:
+    """Everything an artifact producer may need to write its file."""
+
+    run_id: str
+    directory: Path
+    spec: GraphSpec
+    result: ExecutionResult
+    prompt: str | None
+
+
+class ArtifactProducer(Protocol):
+    """One recordable run artifact.
+
+    `key` is the stable short name used in `RunRecord.artifacts` (e.g.
+    "spec"); `filename` is the on-disk name (e.g. "spec.json") and is also
+    the identifier a selection filters on. `applies()` lets a producer
+    opt out for a given run (e.g. the prompt file when no prompt was given).
+    """
+
+    key: str
+    filename: str
+
+    def applies(self, ctx: ArtifactContext) -> bool: ...
+
+    def write(self, ctx: ArtifactContext) -> Path: ...
+
+
+class _SpecProducer:
+    key = "spec"
+    filename = "spec.json"
+
+    def applies(self, ctx: ArtifactContext) -> bool:
+        return True
+
+    def write(self, ctx: ArtifactContext) -> Path:
+        path = ctx.directory / self.filename
+        path.write_text(
+            json.dumps(ctx.spec.model_dump(mode="json", by_alias=True), indent=2),
+            encoding="utf-8",
+        )
+        return path
+
+
+class _TraceProducer:
+    key = "trace"
+    filename = "trace.jsonl"
+
+    def applies(self, ctx: ArtifactContext) -> bool:
+        return True
+
+    def write(self, ctx: ArtifactContext) -> Path:
+        path = ctx.directory / self.filename
+        with path.open("w", encoding="utf-8") as fh:
+            for event in ctx.result.trace.events:
+                fh.write(json.dumps(event.model_dump(mode="json")) + "\n")
+        return path
+
+
+class _OutputProducer:
+    key = "output"
+    filename = "output.json"
+
+    def applies(self, ctx: ArtifactContext) -> bool:
+        return True
+
+    def write(self, ctx: ArtifactContext) -> Path:
+        path = ctx.directory / self.filename
+        path.write_text(
+            json.dumps(_extract_output(ctx.result), indent=2, default=str),
+            encoding="utf-8",
+        )
+        return path
+
+
+class _MermaidProducer:
+    key = "mermaid"
+    filename = "graph.mmd"
+
+    def applies(self, ctx: ArtifactContext) -> bool:
+        return True
+
+    def write(self, ctx: ArtifactContext) -> Path:
+        path = ctx.directory / self.filename
+        path.write_text(render_mermaid(ctx.spec), encoding="utf-8")
+        return path
+
+
+class _PromptProducer:
+    key = "prompt"
+    filename = "prompt.md"
+
+    def applies(self, ctx: ArtifactContext) -> bool:
+        return ctx.prompt is not None
+
+    def write(self, ctx: ArtifactContext) -> Path:
+        path = ctx.directory / self.filename
+        path.write_text(ctx.prompt or "", encoding="utf-8")
+        return path
+
+
+class _SummaryProducer:
+    key = "summary"
+    filename = "summary.md"
+
+    def applies(self, ctx: ArtifactContext) -> bool:
+        return True
+
+    def write(self, ctx: ArtifactContext) -> Path:
+        path = ctx.directory / self.filename
+        path.write_text(
+            _render_summary(ctx.run_id, ctx.spec, ctx.result, ctx.prompt),
+            encoding="utf-8",
+        )
+        return path
+
+
+# Order is preserved in RunRecord.artifacts and matches the historical layout.
+DEFAULT_PRODUCERS: tuple[ArtifactProducer, ...] = (
+    _SpecProducer(),
+    _TraceProducer(),
+    _OutputProducer(),
+    _MermaidProducer(),
+    _PromptProducer(),
+    _SummaryProducer(),
+)
 
 
 class FileRecorder:
@@ -96,6 +224,15 @@ class FileRecorder:
         overwrite: if False (default), `record()` raises FileExistsError when
             the per-run directory already exists. If True, files are
             overwritten in place; other files in the directory are left alone.
+        selection: a set of artifact *filenames* to write (e.g.
+            ``{"graph.mmd", "trace.jsonl"}``). ``None`` (default) writes the
+            full set. Unselected producers never run, so e.g. the Mermaid
+            diagram and summary aren't rendered when not requested.
+        producers: the artifact producers to iterate. Defaults to
+            `DEFAULT_PRODUCERS`; pass a superset to register custom artifacts.
+
+    Note: excluding ``spec.json`` is allowed, but `resume`/`replay` need it —
+    they fail loudly (`load_validated_spec`) if it wasn't recorded.
     """
 
     def __init__(
@@ -103,13 +240,20 @@ class FileRecorder:
         root_dir: Path | str = "runs",
         *,
         overwrite: bool = False,
+        selection: frozenset[str] | None = None,
+        producers: tuple[ArtifactProducer, ...] = DEFAULT_PRODUCERS,
     ) -> None:
         self._root = Path(root_dir)
         self._overwrite = overwrite
+        self._selection = selection
+        self._producers = producers
 
     @property
     def root_dir(self) -> Path:
         return self._root
+
+    def _selects(self, producer: ArtifactProducer) -> bool:
+        return self._selection is None or producer.filename in self._selection
 
     def record(
         self,
@@ -131,43 +275,21 @@ class FileRecorder:
             )
         directory.mkdir(parents=True, exist_ok=True)
 
+        ctx = ArtifactContext(
+            run_id=run_id,
+            directory=directory,
+            spec=spec,
+            result=result,
+            prompt=prompt,
+        )
+
         artifacts: dict[str, Path] = {}
-
-        spec_path = directory / "spec.json"
-        spec_path.write_text(
-            json.dumps(spec.model_dump(mode="json", by_alias=True), indent=2),
-            encoding="utf-8",
-        )
-        artifacts["spec"] = spec_path
-
-        trace_path = directory / "trace.jsonl"
-        with trace_path.open("w", encoding="utf-8") as fh:
-            for event in result.trace.events:
-                fh.write(json.dumps(event.model_dump(mode="json")) + "\n")
-        artifacts["trace"] = trace_path
-
-        output_path = directory / "output.json"
-        output_path.write_text(
-            json.dumps(_extract_output(result), indent=2, default=str),
-            encoding="utf-8",
-        )
-        artifacts["output"] = output_path
-
-        mermaid_path = directory / "graph.mmd"
-        mermaid_path.write_text(render_mermaid(spec), encoding="utf-8")
-        artifacts["mermaid"] = mermaid_path
-
-        if prompt is not None:
-            prompt_path = directory / "prompt.md"
-            prompt_path.write_text(prompt, encoding="utf-8")
-            artifacts["prompt"] = prompt_path
-
-        summary_path = directory / "summary.md"
-        summary_path.write_text(
-            _render_summary(run_id, spec, result, prompt),
-            encoding="utf-8",
-        )
-        artifacts["summary"] = summary_path
+        for producer in self._producers:
+            if not self._selects(producer):
+                continue
+            if not producer.applies(ctx):
+                continue
+            artifacts[producer.key] = producer.write(ctx)
 
         return RunRecord(run_id=run_id, directory=directory, artifacts=artifacts)
 
@@ -177,14 +299,16 @@ class FileRecorder:
         spec_path = self._root / run_id / "spec.json"
         if not spec_path.exists():
             raise FileNotFoundError(
-                f"No recorded spec for run_id {run_id!r} at {spec_path}"
+                f"No recorded spec for run_id {run_id!r} at {spec_path}. "
+                "resume/replay need spec.json — re-run including the SPEC "
+                "artifact (e.g. record=Recording.replayable() or record=True)."
             )
         raw = json.loads(spec_path.read_text(encoding="utf-8"))
         return GraphSpec.model_validate(raw)
 
     def record_chain(
         self,
-        result: "IterativeSupervisorResult",
+        result: IterativeSupervisorResult,
         *,
         original_prompt: str,
         overwrite: bool | None = None,
@@ -226,9 +350,7 @@ class FileRecorder:
         )
         artifacts["summary"] = summary_path
 
-        return ChainRecord(
-            chain_id=chain_id, directory=directory, artifacts=artifacts
-        )
+        return ChainRecord(chain_id=chain_id, directory=directory, artifacts=artifacts)
 
     def load_chain(self, chain_id: str) -> dict[str, Any]:
         """Read a previously-persisted `chain.json` for `chain_id`."""
@@ -260,9 +382,7 @@ class FileRecorder:
     def artifact_path(self, run_id: str, name: str) -> Path:
         _validate_run_id(run_id)
         if not name or not all(ch in _SAFE_RUN_ID_CHARS for ch in name):
-            raise ValueError(
-                f"artifact name contains unsafe characters: {name!r}"
-            )
+            raise ValueError(f"artifact name contains unsafe characters: {name!r}")
         return self._root / run_id / "artifacts" / name
 
     def list_runs(self) -> list[dict[str, Any]]:
@@ -302,6 +422,59 @@ class FileRecorder:
                 {"run_id": child.name, "status": status, "nodes": node_count}
             )
         return summaries
+
+
+class NullRecorder:
+    """Recorder that persists nothing — for SDK/library use.
+
+    Satisfies the `Recorder` protocol but writes no files, so embedding the
+    engine in someone else's app doesn't flood their working directory with
+    `runs/` output. `record()` returns a receipt with an empty artifact map.
+    Resume/replay need real persistence, so `load_validated_spec` raises with
+    guidance to enable recording.
+    """
+
+    def __init__(self, root_dir: Path | str = "runs") -> None:
+        self._root = Path(root_dir)
+
+    @property
+    def root_dir(self) -> Path:
+        return self._root
+
+    def record(
+        self,
+        *,
+        spec: GraphSpec,
+        result: ExecutionResult,
+        prompt: str | None = None,
+        overwrite: bool | None = None,
+    ) -> RunRecord:
+        del spec, prompt, overwrite
+        return RunRecord(
+            run_id=result.trace.run_id,
+            directory=self._root / result.trace.run_id,
+            artifacts={},
+        )
+
+    def load_validated_spec(self, run_id: str) -> GraphSpec:
+        raise FileNotFoundError(
+            f"NullRecorder persists nothing, so spec for {run_id!r} is "
+            "unavailable. Enable recording (record=True) to use resume/replay."
+        )
+
+    def record_chain(
+        self,
+        result: IterativeSupervisorResult,
+        *,
+        original_prompt: str,
+        overwrite: bool | None = None,
+    ) -> ChainRecord:
+        del original_prompt, overwrite
+        return ChainRecord(
+            chain_id=result.chain_id,
+            directory=self._root / result.chain_id,
+            artifacts={},
+        )
 
 
 def _validate_run_id(run_id: str) -> None:
@@ -377,7 +550,7 @@ def _render_summary(
 
 
 def _serialize_chain(
-    result: "IterativeSupervisorResult",
+    result: IterativeSupervisorResult,
     *,
     original_prompt: str,
 ) -> dict[str, Any]:
@@ -440,7 +613,7 @@ def _serialize_chain(
 
 
 def _render_chain_summary(
-    result: "IterativeSupervisorResult",
+    result: IterativeSupervisorResult,
     *,
     original_prompt: str,
 ) -> str:

@@ -62,7 +62,8 @@ def test_resume_completes_paused_run(tmp_path) -> None:
     assert created.json()["status"] == "paused"
 
     resumed = client.post(
-        "/runs/wait-1/resume", json={"event": {"event_type": "human_input", "value": "hello"}}
+        "/runs/wait-1/resume",
+        json={"event": {"event_type": "human_input", "value": "hello"}},
     )
     assert resumed.status_code == 200
     assert resumed.json()["status"] == "ok"
