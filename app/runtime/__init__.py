@@ -20,10 +20,19 @@ from app.runtime.executor import (
     LangGraphExecutor,
 )
 from app.runtime.llm_runner import (
+    ChatLlmRunner,
     LlmReduceRunner,
     OpenAILlmRunner,
     build_openai_llm_runner,
     build_openai_reduce_runner,
+)
+from app.runtime.model_providers import (
+    MissingModelProviderCredential,
+    ModelProvider,
+    ModelRef,
+    OpenAIModelProvider,
+    ProviderRegistry,
+    default_model_providers,
 )
 from app.runtime.runners import (
     DEFAULT_FAKE_TOOLS,
@@ -40,6 +49,7 @@ from app.runtime.state import make_initial_state, render_value_for_prompt
 from app.runtime.subagents import (
     DEFAULT_SUBAGENT_SYSTEM_PROMPTS,
     Subagent,
+    build_llm_subagents,
     build_openai_spawn_subagent_runner,
     build_openai_subagents,
     make_llm_subagent,
@@ -66,6 +76,7 @@ __all__ = [
     "DEFAULT_FAKE_TOOLS",
     "DEFAULT_SUBAGENT_SYSTEM_PROMPTS",
     "ArtifactSink",
+    "ChatLlmRunner",
     "CollectingArtifactSink",
     "CompiledGraph",
     "DuckDuckGoSearchProvider",
@@ -74,8 +85,13 @@ __all__ = [
     "GraphExecutor",
     "LangGraphExecutor",
     "LlmReduceRunner",
+    "MissingModelProviderCredential",
+    "ModelProvider",
+    "ModelRef",
     "NodeRunner",
     "OpenAILlmRunner",
+    "OpenAIModelProvider",
+    "ProviderRegistry",
     "SearchProvider",
     "Subagent",
     "TavilySearchProvider",
@@ -83,6 +99,7 @@ __all__ = [
     "build_default_search_provider",
     "build_grounded_tool_runner",
     "build_grounded_tools",
+    "build_llm_subagents",
     "build_openai_chat",
     "build_openai_llm_runner",
     "build_openai_reduce_runner",
@@ -90,6 +107,7 @@ __all__ = [
     "build_openai_subagents",
     "create_follow_up_task_tool",
     "default_runners",
+    "default_model_providers",
     "document_extract_tool",
     "make_emit_artifact_runner",
     "make_initial_state",

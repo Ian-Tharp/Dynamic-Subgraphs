@@ -7,8 +7,8 @@ This module wires a real chat model.
 Design notes:
 
 - The runner depends on `BaseChatModel`, not on any specific provider.
-  `build_openai_llm_runner` is a convenience factory; swapping providers
-  is a one-line factory change.
+  `build_openai_llm_runner` is a compatibility convenience factory; SDK
+  assembly can pass any provider-built chat model to `ChatLlmRunner`.
 - Upstream state values are injected into the user message so the model
   can see what previous nodes produced. This is how a downstream node like
   `compare_and_recommend` actually has the summaries to compare.
@@ -37,7 +37,7 @@ _SYSTEM_PROMPT = (
 )
 
 
-class OpenAILlmRunner:
+class ChatLlmRunner:
     """Concrete `NodeRunner` for `llm_call` nodes, backed by any chat model."""
 
     def __init__(self, chat_model: BaseChatModel) -> None:
@@ -71,12 +71,15 @@ class OpenAILlmRunner:
         return {"result": text}
 
 
+OpenAILlmRunner = ChatLlmRunner
+
+
 def build_openai_llm_runner(
     model: str = "gpt-5.4-nano",
     *,
     temperature: float | None = None,
-) -> OpenAILlmRunner:
-    """Convenience factory: build an `OpenAILlmRunner` backed by ChatOpenAI.
+) -> ChatLlmRunner:
+    """Convenience factory: build a `ChatLlmRunner` backed by ChatOpenAI.
 
     Requires `OPENAI_API_KEY` in the environment. The langchain-openai import
     is local so callers that don't use a real LLM don't pull the dependency.
@@ -84,7 +87,7 @@ def build_openai_llm_runner(
 
     from app.runtime.chat_models import build_openai_chat
 
-    return OpenAILlmRunner(build_openai_chat(model, temperature=temperature))
+    return ChatLlmRunner(build_openai_chat(model, temperature=temperature))
 
 
 _REDUCE_SYSTEM_PROMPT = (

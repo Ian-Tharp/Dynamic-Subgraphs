@@ -98,7 +98,9 @@ def test_create_chain_with_llm_decider_can_replan(
     ]
     captured = {}
 
-    def fake_builder(**kwargs):
+    def fake_builder(model_provider, model_ref, **kwargs):
+        assert model_provider.name == "openai"
+        assert model_ref.qualified_name == "openai:gpt-5.4-nano"
         captured.update(kwargs)
 
         def fake_decider(context: IterationContext) -> IterationDecision:
@@ -106,7 +108,7 @@ def test_create_chain_with_llm_decider_can_replan(
 
         return fake_decider
 
-    monkeypatch.setattr("app.api.deps.build_openai_iteration_decider", fake_builder)
+    monkeypatch.setattr("app.api.deps.build_provider_iteration_decider", fake_builder)
     client = _client(tmp_path)
 
     resp = client.post(

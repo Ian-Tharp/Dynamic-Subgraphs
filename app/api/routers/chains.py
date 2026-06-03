@@ -98,7 +98,12 @@ def create_chain(
     _: None = Depends(require_auth),
 ) -> Response:
     ctx = get_context(request)
-    config = resolve_run_config(ctx, planner=body.planner, model=body.model)
+    config = resolve_run_config(
+        ctx,
+        planner=body.planner,
+        provider=body.provider,
+        model=body.model,
+    )
     decider = resolve_chain_decider(
         ctx,
         config=config,

@@ -16,7 +16,9 @@ from app.supervisor.iteration import (
     IterativeSupervisorResult,
     LlmIterationDecider,
     StatusIterationDecider,
+    build_llm_iteration_decider,
     build_openai_iteration_decider,
+    build_provider_iteration_decider,
     build_replan_prompt,
 )
 from app.supervisor.planner import Planner, StaticPlanner
@@ -40,7 +42,9 @@ __all__ = [
     "Supervisor",
     "SupervisorResult",
     "SupervisorState",
+    "build_llm_iteration_decider",
     "build_openai_iteration_decider",
+    "build_provider_iteration_decider",
     "build_openai_planner",
     "build_replan_prompt",
     "build_supervisor_graph",

@@ -3,7 +3,8 @@
 
 Used by both the CLI (`app/main.py`) and the HTTP API so they construct
 identical supervisors. The mock path is token-free (StaticPlanner + mock/echo
-runners); the openai path uses the real planner + grounded tools in strict mode.
+runners); the LLM path uses a provider-selected model for planner, workers,
+reducers, and subagents.
 """
 
 from __future__ import annotations
@@ -15,33 +16,57 @@ from typing import Any, Literal
 from app.models import DynamicRunState, NodeKind
 from app.recording import Recorder
 from app.runtime import (
+    ChatLlmRunner,
     FileArtifactSink,
     LangGraphExecutor,
+    LlmReduceRunner,
+    ModelRef,
     NodeRunner,
-    build_grounded_tool_runner,
-    build_openai_llm_runner,
-    build_openai_reduce_runner,
-    build_openai_spawn_subagent_runner,
     make_emit_artifact_runner,
+    make_spawn_subagent_runner,
+    build_grounded_tool_runner,
+    build_llm_subagents,
+    default_model_providers,
 )
+from app.runtime.model_providers import ProviderRegistry
 from app.runtime.subgraph import build_spawn_subgraph_runner, make_child_launcher
 from app.supervisor import (
+    LLMPlanner,
     Planner,
     StaticPlanner,
     Supervisor,
-    build_openai_planner,
 )
+from app.models import GraphSpec
 
 _LLM_REDUCE_STRATEGIES = {"concat", "merge_dict", "llm_summarize"}
+PlannerMode = Literal["mock", "llm", "openai"]
 
 
 @dataclass(frozen=True)
 class RunConfig:
     """Resolved per-run configuration shared by CLI and API."""
 
-    planner: Literal["mock", "openai"]
+    planner: PlannerMode
     model: str
     strict_runners: bool
+    provider: str = "openai"
+
+    def __post_init__(self) -> None:
+        planner = self.planner
+        provider = self.provider.strip().lower()
+        if planner == "openai":
+            planner = "llm"
+            provider = "openai"
+        if planner not in ("mock", "llm"):
+            raise ValueError("RunConfig.planner must be 'mock', 'llm', or 'openai'")
+        if not provider:
+            raise ValueError("RunConfig.provider must be non-empty")
+        object.__setattr__(self, "planner", planner)
+        object.__setattr__(self, "provider", provider)
+
+    @property
+    def model_ref(self) -> ModelRef:
+        return ModelRef(provider=self.provider, model=self.model)
 
 
 def mock_llm_runner(
@@ -56,10 +81,16 @@ def mock_llm_runner(
     return {"result": f"<mock-llm>{instruction}{suffix}</mock-llm>"}
 
 
-def _build_planner(config: RunConfig) -> Planner:
-    if config.planner == "openai":
-        return build_openai_planner(
-            model=config.model,
+def _build_planner(
+    config: RunConfig,
+    *,
+    model_providers: ProviderRegistry,
+) -> Planner:
+    if config.planner == "llm":
+        provider = model_providers.get(config.provider)
+        structured = provider.build_structured_output(config.model_ref, GraphSpec)
+        return LLMPlanner(
+            structured,
             executable_reduce_strategies=_LLM_REDUCE_STRATEGIES,
         )
     from app.main import build_demo_spec
@@ -67,15 +98,22 @@ def _build_planner(config: RunConfig) -> Planner:
     return StaticPlanner(build_demo_spec())
 
 
-def _build_runners(config: RunConfig, *, runs_dir: str) -> dict[NodeKind, NodeRunner]:
+def _build_runners(
+    config: RunConfig,
+    *,
+    runs_dir: str,
+    model_providers: ProviderRegistry,
+) -> dict[NodeKind, NodeRunner]:
     emit_runner = make_emit_artifact_runner(FileArtifactSink(root_dir=runs_dir))
     runners: dict[NodeKind, NodeRunner] = {NodeKind.EMIT_ARTIFACT: emit_runner}
 
-    if config.planner == "openai":
-        runners[NodeKind.LLM_CALL] = build_openai_llm_runner(model=config.model)
-        runners[NodeKind.REDUCE] = build_openai_reduce_runner(model=config.model)
-        runners[NodeKind.SPAWN_SUBAGENT] = build_openai_spawn_subagent_runner(
-            model=config.model
+    if config.planner == "llm":
+        provider = model_providers.get(config.provider)
+        chat_model = provider.build_chat(config.model_ref)
+        runners[NodeKind.LLM_CALL] = ChatLlmRunner(chat_model)
+        runners[NodeKind.REDUCE] = LlmReduceRunner(chat_model)
+        runners[NodeKind.SPAWN_SUBAGENT] = make_spawn_subagent_runner(
+            build_llm_subagents(chat_model=chat_model)
         )
         runners[NodeKind.TOOL_CALL] = build_grounded_tool_runner()
     else:
@@ -89,6 +127,7 @@ def build_supervisor(
     *,
     recorder: Recorder,
     checkpointer: Any | None = None,
+    model_providers: ProviderRegistry | None = None,
 ) -> Supervisor:
     """Construct a Supervisor wired for `config`.
 
@@ -97,8 +136,9 @@ def build_supervisor(
     """
 
     runs_dir = str(getattr(recorder, "root_dir", "runs"))
-    planner = _build_planner(config)
-    runners = _build_runners(config, runs_dir=runs_dir)
+    providers = model_providers or default_model_providers()
+    planner = _build_planner(config, model_providers=providers)
+    runners = _build_runners(config, runs_dir=runs_dir, model_providers=providers)
     executor = LangGraphExecutor(
         runners=runners,
         checkpointer=checkpointer,

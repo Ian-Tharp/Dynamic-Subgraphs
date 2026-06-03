@@ -20,8 +20,10 @@ uv run python -m app.main "compare A and B"
 uv run python -m app.api
 ```
 
-By default everything runs in **mock** mode — free and offline. Set `DS_PLANNER=openai`
-(with `OPENAI_API_KEY`) to use the real planner and grounded tools.
+By default everything runs in **mock** mode — free and offline. Set
+`DS_PLANNER=llm` and `DS_PROVIDER=openai` (with `OPENAI_API_KEY`) to use the
+real planner and grounded tools. The legacy `DS_PLANNER=openai` value still
+maps to `planner=llm` with `provider=openai`.
 
 ## Documentation
 

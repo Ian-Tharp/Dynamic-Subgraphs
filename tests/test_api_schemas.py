@@ -12,6 +12,7 @@ def test_run_request_defaults_mode_auto() -> None:
     assert req.mode == "auto"
     assert req.run_id is None
     assert req.planner is None
+    assert req.provider is None
     assert req.model is None
 
 

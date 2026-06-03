@@ -53,6 +53,7 @@ def _make_run_worker(ctx: AppContext, config, prompt: str, run_id: str):
             save_run_config(
                 ctx.recorder.run_dir(run_id),
                 planner=config.planner,
+                provider=config.provider,
                 model=config.model,
             )
         spec = result.validated_spec
@@ -75,7 +76,12 @@ def create_run(
     _: None = Depends(require_auth),
 ) -> Response:
     ctx = get_context(request)
-    config = resolve_run_config(ctx, planner=body.planner, model=body.model)
+    config = resolve_run_config(
+        ctx,
+        planner=body.planner,
+        provider=body.provider,
+        model=body.model,
+    )
 
     run_id = body.run_id or _new_run_id()
     _validate_run_id(run_id)
@@ -186,7 +192,9 @@ def get_graph(request: Request, run_id: str) -> Response:
 @router.get("/runs/{run_id}/summary")
 def get_summary(request: Request, run_id: str) -> Response:
     path = _run_file(get_context(request), run_id, "summary.md")
-    return PlainTextResponse(content=path.read_text(encoding="utf-8"), media_type="text/markdown")
+    return PlainTextResponse(
+        content=path.read_text(encoding="utf-8"), media_type="text/markdown"
+    )
 
 
 @router.get("/runs/{run_id}/artifacts")
@@ -226,6 +234,7 @@ def resume_run(
     config = resolve_run_config(
         ctx,
         planner=persisted["planner"] if persisted else None,
+        provider=persisted["provider"] if persisted else None,
         model=persisted["model"] if persisted else None,
     )
     supervisor = ctx.supervisor_for(config)
@@ -249,6 +258,7 @@ def replay_run(
     config = resolve_run_config(
         ctx,
         planner=persisted["planner"] if persisted else None,
+        provider=persisted["provider"] if persisted else None,
         model=persisted["model"] if persisted else None,
     )
     supervisor = ctx.supervisor_for(config)

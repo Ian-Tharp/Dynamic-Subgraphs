@@ -27,16 +27,18 @@ Read from the environment / `.env` at app construction (env prefix `DS_`):
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `DS_PLANNER` | `mock` | Default planner mode (`mock` boots free + offline). |
-| `DS_MODEL` | `gpt-5.4-nano` | Default model when planner is `openai`. |
-| `DS_MODEL_ALLOWLIST` | `gpt-5.4-nano` | Comma list; per-request `model` must be in here. |
+| `DS_PLANNER` | `mock` | Default planner mode (`mock` or `llm`; legacy `openai` maps to `llm` + `provider=openai`). |
+| `DS_PROVIDER` | `openai` | Default model provider for `planner=llm` and `decider=llm`. |
+| `DS_MODEL` | `gpt-5.4-nano` | Default model for the selected provider. |
+| `DS_MODEL_ALLOWLIST` | `gpt-5.4-nano` | Comma list; accepts plain model ids or provider-qualified ids such as `openai:gpt-5.4-nano`. |
 | `DS_RUNS_DIR` | `runs` | Recorder root directory. |
 | `DS_API_KEY` | *(unset)* | If set, `POST` endpoints require `Authorization: Bearer <key>`. |
 | `DS_AUTO_SYNC_SECONDS` | `25` | `auto` mode grace window before falling back to 202. |
 | `DS_MAX_SYNC_SECONDS` | `120` | Hard cap a `sync` request blocks before falling back to 202. |
 
-Per-request `planner`/`model` overrides are validated against the allowlist.
-Requesting `planner=openai` without `OPENAI_API_KEY` set returns `503`.
+Per-request `planner`/`provider`/`model` overrides are validated against the
+allowlist. Requesting `planner=llm` with a provider whose required credentials
+are missing returns `503`.
 
 ---
 
@@ -114,7 +116,7 @@ All errors serialize as a single envelope via FastAPI exception handlers:
 | `401` | missing/bad bearer when `DS_API_KEY` is set |
 | `404` | run / chain / artifact not found |
 | `409` | run_id already exists; run not resumable |
-| `503` | `planner=openai` requested but no `OPENAI_API_KEY` |
+| `503` | `planner=llm` or `decider=llm` requested but the selected provider is missing required credentials |
 
 ---
 
@@ -191,7 +193,8 @@ curl -X POST http://localhost:8000/chains \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "research and refine this",
-    "planner": "openai",
+    "planner": "llm",
+    "provider": "openai",
     "decider": "llm",
     "success_criteria": "Answer with grounded evidence and a clear recommendation.",
     "max_iterations": 3
