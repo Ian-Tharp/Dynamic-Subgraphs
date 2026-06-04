@@ -219,6 +219,7 @@ def build_supervisor(
     artifact_sink: ArtifactSink | None = None,
     chat_callbacks: list[Any] | None = None,
     policy: ExecutionPolicy | None = None,
+    max_plan_attempts: int = 1,
 ) -> Supervisor:
     """Construct a Supervisor wired for `config`.
 
@@ -270,4 +271,5 @@ def build_supervisor(
         executor=executor,
         recorder=recorder,
         policy=effective_policy,
+        max_plan_attempts=max_plan_attempts,
     )
