@@ -25,6 +25,12 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
   the model-comparison eval — see `docs/evals/model-comparison-2026-06.md`.
 
 ### Added
+- Eval/value layer foundation (Slice 7, PR1 — types only, OFF by default):
+  `dynamic_subgraphs.eval` with the `EvalGate` protocol, the persisted
+  `EvalResult` (+ `ScoreComponent`, `RunFingerprint`, `EvalReference`,
+  `EvalTags`, `EvalContext`) and the `value_per_ktok`/`value_per_usd` axes.
+  Nothing scores a run until an `EvalGate` is configured. Design:
+  `docs/specs/2026-06-03-eval-value-layer-design.md`.
 - `DynamicSubgraphs.capabilities()` now lists `node_kinds` (the registry's full
   node vocabulary), and `dynamic_subgraphs.types.NODE_KINDS` exposes it as a
   runtime tuple — both sourced from the `NodeKind` enum so the agent-facing

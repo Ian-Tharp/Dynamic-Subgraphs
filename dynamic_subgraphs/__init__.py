@@ -32,6 +32,15 @@ from dynamic_subgraphs.engine import (
     RunResult,
     TokenUsage,
 )
+from dynamic_subgraphs.eval import (
+    EvalContext,
+    EvalGate,
+    EvalReference,
+    EvalResult,
+    EvalTags,
+    RunFingerprint,
+    ScoreComponent,
+)
 from dynamic_subgraphs.recording import Artifact, Recording
 from dynamic_subgraphs.types import (
     ARTIFACT_KINDS,
@@ -53,13 +62,20 @@ __all__ = [
     "Artifact",
     "DynamicSubgraphs",
     "EngineConfig",
+    "EvalContext",
+    "EvalGate",
+    "EvalReference",
+    "EvalResult",
+    "EvalTags",
     "Model",
     "ModelRef",
     "ModelSelection",
     "Planner",
     "Recording",
+    "RunFingerprint",
     "RunResult",
     "RunStatus",
+    "ScoreComponent",
     "StructuredMethod",
     "TokenUsage",
 ]
