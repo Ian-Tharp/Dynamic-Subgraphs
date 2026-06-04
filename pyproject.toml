@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dynamic-subgraphs"
-version = "0.1.0"
+version = "0.2.0"
 description = "A governed dynamic-graph runtime: a stable Supervisor plans, validates, and runs transient LangGraph workflows from a bounded node registry."
 readme = "README.md"
 requires-python = ">=3.11"

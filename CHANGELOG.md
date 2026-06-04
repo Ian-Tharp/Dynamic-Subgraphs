@@ -7,136 +7,88 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
 
 ## [Unreleased]
 
-### Changed
-- **Runtime governance guards — the host policy is now enforced end-to-end, not
-  just on numeric budgets.** At validation (root run *and* every nested
-  `spawn_subgraph` child): **allow-sets** (tools / subagents / node kinds) are
-  the host ∩ registry intersection — a plan naming a disallowed capability is
-  rejected (`tool_not_allowlisted` / `node_kind_not_allowed`); **nested budgets
-  compose** — a child's node/LLM/depth budget is the parent's *remaining*
-  allowance, so a nest can't outspend the root, and nesting depth is capped at
-  the tighter of the host `max_depth` and the hard rail. At runtime:
-  `parallel_map` **fan-out** over more than the granted `max_fanout` halts
-  fail-closed before any work fires; a run that outruns `max_wall_seconds` is
-  **abandoned** (daemon invoke thread + bounded join, so a hung runner can't
-  block forever). Verified with offline tests and a live e2e.
+## [0.2.0] — 2026-06-04
+
+The headline of this release is **governance that's actually enforced**: the
+host owns the limits, and a planner can no longer grant itself more than the
+host allows. It also adds a plan-repair loop, exact token usage + auto cost, the
+model-agnostic SDK facade, opt-in recording, and the typed foundation of an
+eval/value layer.
+
+### Upgrade notes (behavior changes since 0.1.0)
+- **Host budgets are enforced by default.** A plan that self-grants beyond the
+  default ceilings (`max_nodes=12`, `max_llm_calls=8`, `max_depth=2`) — or names
+  a disallowed tool/subagent/node kind under a restrictive `ExecutionPolicy` —
+  is now capped or rejected. Typical plans are unaffected; set a stricter (or
+  looser) `EngineConfig(policy=ExecutionPolicy(...))` to tune the envelope.
+- **Plan-repair is on by default** (`max_plan_attempts=2`): a recoverable
+  validation failure triggers one re-plan with the issues + host limits fed
+  back (an extra planner call). Set `max_plan_attempts=1` for the old
+  strict block-and-report behavior.
+- **Validation is stricter:** a node input must be produced by an actual
+  *ancestor* (a sibling-branch value is no longer accepted by ordering luck),
+  and reserved/collision-prone node ids (`START`/`END`, the `__pm_` marker,
+  non-identifier strings) are rejected. Previously-accepted-but-invalid specs
+  now fail with a clear issue.
 
 ### Added
-- `GraphBudget.max_fanout` (default 64) — the planner may request a fan-out
-  limit; the effective cap is `min(host, request)`, stamped and enforced.
-
-### Fixed
-- `replay()` re-validates the recorded spec against the **current** host policy
-  before re-executing, so a spec recorded under looser limits no longer replays
-  if the host has since tightened them (was trusted verbatim).
-- `app/policy.py` is now type-checked in CI (mypy) alongside the public package;
-  removed stale `type: ignore`s. (Broader `app/*` typing is a follow-up.)
-
-### Documentation
-- README reframed around the actual value proposition — a *governed, auditable*
-  runtime for LLM-generated workflows (validated plans, allowlisted vocabulary,
-  budget-capped recursion, replayable runs), rather than leading with "the model
-  invents the topology".
-- Added the missing `branch` node kind to the README's vocabulary list (the
-  registry ships nine kinds; the README listed eight) and a dynamic-routing diagram
-  that shows it.
-- Added a "When (not) to reach for it" section — when a fixed graph or a plain
-  tool loop is the better tool, stated plainly.
-- Clarified in the README lede that recording is **opt-in** — the public SDK
-  defaults to in-memory execution and writes no files (removed wording that
-  implied every run is persisted).
-- Pointed the PyPI `Documentation` URL at the docs on the active branch.
-- Added `docs/api-stability.md` — the project's opinionated API stability &
-  change policy (public-API definition, SemVer / 0.x rule, additive-by-default
-  discipline, deprecation policy, and the CI guards that enforce it). Linked
-  from the README and CONTRIBUTING.
-
-### Changed
-- **Plan-repair loop (default ON).** When a plan is rejected by the validator
-  for a *recoverable* reason (budget overrun, dangling edge, missing input,
-  bad branch, reserved id…), the supervisor now feeds the issues + the host
-  limits back into a re-plan, up to `EngineConfig(max_plan_attempts=...)`
-  planner attempts. **Default is 2** (repair once) — a behavior change that
-  makes plans "just work" more often; set `max_plan_attempts=1` for strict
-  block-and-report on the first failure. Each attempt is another planner call;
-  un-recoverable issues never retry. `RunResult.plan_attempts` reports how many
-  it took. Verified live (a real over-budget plan recovered on the repair pass).
-- **Host-owned budget enforcement.** Budget validation now enforces the
-  host-owned `ExecutionPolicy` (`EngineConfig(policy=...)`), not the planner's
-  self-declared `GraphBudget`: the effective limit per field is
-  `min(host ceiling, planner request)`, and the granted budget is stamped onto
-  the validated spec (so the recursion rail, nested-subgraph clamp, recording,
-  and API all read the host-enforced limits) — at the root **and** every nested
-  `spawn_subgraph` child. With no policy set, default ceilings apply
-  (`max_nodes=12`, `max_llm_calls=8`, `max_depth=2`), matching the historical
-  `GraphBudget` defaults. *Behavior change:* a plan that self-grants more than
-  the host allows is now capped or rejected (`budget_exceeded`) — a planner can
-  no longer grant itself a larger budget. Verified against real planner output.
-  Allowlist intersection (tools/subagents/kinds) and runtime guards
-  (spend-ledger, fan-out, wall-clock, reserve-and-refund nesting) land next.
-- Removed `mock_document_extract` from the default tool allowlist (it echoed
-  empty content, so a planner that picked it for a retrieval/compare task
-  produced a dead-end run); retrieval now routes to `web_search`. Surfaced by
-  the model-comparison eval — see `docs/evals/model-comparison-2026-06.md`.
-
-### Fixed
-- Validator input-provenance: a node input is satisfiable only when produced by
-  an actual **ancestor** of the consuming node, not by any earlier-visited node.
-  A value produced solely by a sibling branch (with no edge ordering it first)
-  is now correctly rejected instead of accepted by topological luck.
-- Validator now rejects reserved / collision-prone node ids — `START`/`END` and
-  ids containing the `__pm_` marker the compiler derives parallel_map internal
-  node names from — plus malformed ids (must match `[A-Za-z0-9_-]+`). Prevents a
-  planner-chosen id from shadowing a generated node.
-
-### Added
-- `EngineConfig(max_plan_attempts=...)` — bounds the plan-repair loop (see
-  *Changed*); default 2, set 1 for strict block-and-report.
-- `RunResult.plan_attempts` — how many planner attempts a run took (1 unless the
-  repair loop re-planned), included in `to_dict()`.
-- `EngineConfig(policy=ExecutionPolicy(...))` — host-owned budget governance,
-  now **wired and enforced** (see *Changed*). `ExecutionPolicy` is exported from
-  the public `dynamic_subgraphs` facade.
-- `RunResult.effective_budget` — the host-*granted* budget for a run (the
-  planner's request capped by the policy; equals `plan.budget`), included in
-  `to_dict()`. Lets a caller see granted-vs-requested.
-- ExecutionPolicy foundation (host-owned governance, PR1 — types + resolver):
-  `app.policy` with `ExecutionPolicy`, `EffectiveBudget`, `RemainingBudget`, and
-  the pure `resolve_effective_budget` (effective budget =
-  `min(planner, host, parent-remaining)` per field; vocabulary = host ∩
-  registry; a child resolution refuses to fall back to a full budget).
-  `MAX_DEPTH_CEILING` now lives in `app.policy` (re-exported from the validator).
-  Design: `docs/specs/2026-06-04-execution-policy-design.md`.
-- Eval/value layer foundation (Slice 7, PR1 — types only, OFF by default):
-  `dynamic_subgraphs.eval` with the `EvalGate` protocol, the persisted
+- **Host-owned governance** — `EngineConfig(policy=ExecutionPolicy(...))`,
+  enforced end-to-end (root run and every nested `spawn_subgraph` child):
+  budgets capped at `min(host, planner request)`; tool/subagent/node-kind
+  allow-sets as the host ∩ registry intersection; a `parallel_map` fan-out cap
+  (`GraphBudget.max_fanout`, default 64); nested budgets composed against the
+  parent's *remaining* allowance; and a wall-clock bound (`max_wall_seconds`)
+  that abandons a run/hung runner. `RunResult.effective_budget` surfaces the
+  granted-vs-requested budget. `ExecutionPolicy` is exported from the facade.
+- **Plan-repair loop** — `EngineConfig(max_plan_attempts=...)`;
+  `RunResult.plan_attempts` reports how many planner attempts a run took.
+- **Eval/value layer foundation** (types only, off until an `EvalGate` is
+  configured) — `dynamic_subgraphs.eval` with `EvalGate`, the persisted
   `EvalResult` (+ `ScoreComponent`, `RunFingerprint`, `EvalReference`,
   `EvalTags`, `EvalContext`) and the `value_per_ktok`/`value_per_usd` axes.
-  Nothing scores a run until an `EvalGate` is configured. Design:
-  `docs/specs/2026-06-03-eval-value-layer-design.md`.
-- `DynamicSubgraphs.capabilities()` now lists `node_kinds` (the registry's full
-  node vocabulary), and `dynamic_subgraphs.types.NODE_KINDS` exposes it as a
-  runtime tuple — both sourced from the `NodeKind` enum so the agent-facing
-  surface can't drift from what the compiler accepts. Guard tests assert the
-  capabilities map and the README each enumerate every node kind (this drift
-  shipped once — the README listed eight of nine kinds).
-- `RunResult.usage` (exact `TokenUsage` — input/output/total + per-model
-  breakdown, from the providers' own counts via LangChain's usage callback).
-- `RunResult.cost` — computed automatically with the `cost` extra (LiteLLM's
-  maintained price map; no prices to specify, no table we keep current).
-  `EngineConfig(pricing=...)` still overrides per model / prices local models.
-- `docs/evals/` — eval reports. First entry: gpt-5.4-nano vs claude-haiku-4-5
-  e2e comparison (latency / tokens / cost / quality), traced via LangSmith.
-- Public `dynamic_subgraphs` SDK facade: `DynamicSubgraphs`, `EngineConfig`,
-  `Model`, `Recording`/`Artifact`, `RunResult`, `capabilities()`.
-- Model-agnostic providers: OpenAI, Anthropic, and local Ollama / LM Studio
-  (any OpenAI-compatible endpoint) with per-role model selection.
-- Granular, opt-in run recording (`Recording` presets + per-artifact selection).
-- `py.typed` marker (PEP 561) — the SDK ships inline types.
-- Packaging: Apache-2.0 license, optional extras (`api`, `openai`, `anthropic`,
-  `ollama`, `all`), slim core dependencies.
-- Tooling: ruff (lint + format), mypy (strict on the public package), coverage,
-  pre-commit, and GitHub Actions CI.
-- Docs: `examples/` cookbook, `docs/recipes.md` (tested-model + latency tables).
+- **Exact token usage + automatic cost** — `RunResult.usage` (provider-reported
+  counts, always populated) and `RunResult.cost` (auto-computed with the `cost`
+  extra via LiteLLM's maintained price map; `EngineConfig(pricing=...)`
+  overrides). Both surfaced in `to_dict()`.
+- **Model-agnostic SDK facade** — `DynamicSubgraphs`, `EngineConfig`, `Model`,
+  `RunResult`, `Recording`/`Artifact`, `capabilities()`; OpenAI, Anthropic, and
+  local Ollama / LM Studio (any OpenAI-compatible endpoint) with per-role model
+  selection.
+- **Granular, opt-in run recording** (`Recording` presets + per-artifact
+  selection); the default writes no files.
+- `DynamicSubgraphs.capabilities()` lists `node_kinds`; `NODE_KINDS` is a runtime
+  tuple sourced from the `NodeKind` enum, with guard tests so the agent-facing
+  surface can't drift from the compiler.
+- `py.typed` (PEP 561), optional extras (`api`, `openai`, `anthropic`, `ollama`,
+  `cost`, `all`), and `docs/specs/` design docs for the eval + policy work.
+
+### Changed
+- Removed `mock_document_extract` from the default tool allowlist (it echoed
+  empty content and dead-ended retrieval/compare plans); retrieval routes to
+  `web_search`.
+- `replay()` re-validates the recorded spec against the **current** policy
+  before re-executing — a spec recorded under looser limits no longer replays
+  under a tightened policy.
+
+### Fixed
+- Validator input-provenance now follows real ancestry; reserved/malformed node
+  ids are rejected (see *Upgrade notes*).
+- `app/policy.py` is type-checked in CI (mypy) alongside the public package.
+
+### Documentation
+- README reframed around the value proposition (governed, auditable runtime),
+  with the full node-kind vocabulary, a "When (not) to reach for it" section,
+  and a governance + plan-repair guide; recipes for policy and repair.
+- `docs/api-stability.md` — the project's opinionated API-stability & change
+  policy (public-API definition, SemVer / 0.x rule, deprecation, CI guards).
+- `docs/recipes.md` (tested-model + latency tables), `docs/evals/` (a
+  gpt-5.4-nano vs claude-haiku-4-5 comparison), and a project wiki.
+
+### Known limitations
+- Concurrent sibling `spawn_subgraph` nodes can momentarily read the same
+  pre-merge budget counter (a TOCTOU bounded by the depth ceiling); a
+  reserve-and-refund fix is planned.
+- The eval layer ships types only — no scorer is wired yet.
 
 ## [0.1.0]
 
