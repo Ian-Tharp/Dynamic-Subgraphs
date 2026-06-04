@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
     from app.models import GraphSpec
+    from app.policy import ExecutionPolicy
     from app.recording import Recorder
     from app.registry import Registry
     from app.runtime.executor import GraphExecutor
@@ -156,6 +157,7 @@ def make_child_launcher(
     executor: GraphExecutor,
     registry: Registry | None = None,
     recorder: Recorder | None = None,
+    policy: ExecutionPolicy | None = None,
 ) -> ChildLauncher:
     """Build a `ChildLauncher` from a planner + executor.
 
@@ -201,7 +203,10 @@ def make_child_launcher(
                 update={"max_llm_calls": min(spec.budget.max_llm_calls, max_llm_calls)}
             )
             spec = spec.model_copy(update={"budget": capped})
-        validated = validate_graph_spec(spec, registry)
+        # The host policy applies to the child too: a nested graph can never
+        # grant itself a larger budget than the host (the parent's remaining LLM
+        # allowance is already folded into spec.budget above).
+        validated = validate_graph_spec(spec, registry, policy=policy)
         if any(node.kind == NodeKind.WAIT_FOR_EVENT for node in validated.nodes):
             raise SubgraphContainsWaitForEvent(
                 f"child subgraph {run_id!r} contains a wait_for_event node; "

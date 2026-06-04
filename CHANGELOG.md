@@ -27,6 +27,19 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
   from the README and CONTRIBUTING.
 
 ### Changed
+- **Host-owned budget enforcement.** Budget validation now enforces the
+  host-owned `ExecutionPolicy` (`EngineConfig(policy=...)`), not the planner's
+  self-declared `GraphBudget`: the effective limit per field is
+  `min(host ceiling, planner request)`, and the granted budget is stamped onto
+  the validated spec (so the recursion rail, nested-subgraph clamp, recording,
+  and API all read the host-enforced limits) — at the root **and** every nested
+  `spawn_subgraph` child. With no policy set, default ceilings apply
+  (`max_nodes=12`, `max_llm_calls=8`, `max_depth=2`), matching the historical
+  `GraphBudget` defaults. *Behavior change:* a plan that self-grants more than
+  the host allows is now capped or rejected (`budget_exceeded`) — a planner can
+  no longer grant itself a larger budget. Verified against real planner output.
+  Allowlist intersection (tools/subagents/kinds) and runtime guards
+  (spend-ledger, fan-out, wall-clock, reserve-and-refund nesting) land next.
 - Removed `mock_document_extract` from the default tool allowlist (it echoed
   empty content, so a planner that picked it for a retrieval/compare task
   produced a dead-end run); retrieval now routes to `web_search`. Surfaced by
@@ -43,12 +56,17 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
   planner-chosen id from shadowing a generated node.
 
 ### Added
-- ExecutionPolicy foundation (host-owned governance, PR1 — types + resolver
-  only, not yet wired): `app.policy` with `ExecutionPolicy`, `EffectiveBudget`,
-  `RemainingBudget`, and the pure `resolve_effective_budget` (effective budget =
+- `EngineConfig(policy=ExecutionPolicy(...))` — host-owned budget governance,
+  now **wired and enforced** (see *Changed*). `ExecutionPolicy` is exported from
+  the public `dynamic_subgraphs` facade.
+- `RunResult.effective_budget` — the host-*granted* budget for a run (the
+  planner's request capped by the policy; equals `plan.budget`), included in
+  `to_dict()`. Lets a caller see granted-vs-requested.
+- ExecutionPolicy foundation (host-owned governance, PR1 — types + resolver):
+  `app.policy` with `ExecutionPolicy`, `EffectiveBudget`, `RemainingBudget`, and
+  the pure `resolve_effective_budget` (effective budget =
   `min(planner, host, parent-remaining)` per field; vocabulary = host ∩
-  registry; a child resolution refuses to fall back to a full budget). No
-  behavior change until later slices wire it into the validator/executor.
+  registry; a child resolution refuses to fall back to a full budget).
   `MAX_DEPTH_CEILING` now lives in `app.policy` (re-exported from the validator).
   Design: `docs/specs/2026-06-04-execution-policy-design.md`.
 - Eval/value layer foundation (Slice 7, PR1 — types only, OFF by default):

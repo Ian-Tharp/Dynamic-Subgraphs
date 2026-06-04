@@ -14,6 +14,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from app.models import DynamicRunState, GraphSpec, NodeKind
+from app.policy import ExecutionPolicy
 from app.recording import Recorder
 from app.runtime import (
     ArtifactSink,
@@ -217,6 +218,7 @@ def build_supervisor(
     model_providers: ProviderRegistry | None = None,
     artifact_sink: ArtifactSink | None = None,
     chat_callbacks: list[Any] | None = None,
+    policy: ExecutionPolicy | None = None,
 ) -> Supervisor:
     """Construct a Supervisor wired for `config`.
 
@@ -225,8 +227,13 @@ def build_supervisor(
     `artifact_sink` overrides where `emit_artifact` nodes write — pass a
     `CollectingArtifactSink` (with a `NullRecorder`) for a no-files run.
     `chat_callbacks` are attached to every chat model built (e.g. a usage
-    callback to capture token counts).
+    callback to capture token counts). `policy` is the host-owned
+    `ExecutionPolicy` enforced at validation — for the root run **and** every
+    nested `spawn_subgraph` child — so a planner can never grant itself a larger
+    budget than the host allows.
     """
+
+    effective_policy = policy or ExecutionPolicy()
 
     runs_dir = str(getattr(recorder, "root_dir", "runs"))
     providers = model_providers or default_model_providers()
@@ -251,6 +258,16 @@ def build_supervisor(
     # `runners` is the executor's live dict, the executor picks the entry up, so
     # a child can itself spawn (bounded by the depth ceiling).
     runners[NodeKind.SPAWN_SUBGRAPH] = build_spawn_subgraph_runner(
-        make_child_launcher(planner=planner, executor=executor, recorder=recorder)
+        make_child_launcher(
+            planner=planner,
+            executor=executor,
+            recorder=recorder,
+            policy=effective_policy,
+        )
     )
-    return Supervisor(planner=planner, executor=executor, recorder=recorder)
+    return Supervisor(
+        planner=planner,
+        executor=executor,
+        recorder=recorder,
+        policy=effective_policy,
+    )
