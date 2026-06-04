@@ -238,6 +238,8 @@ result.plan          # the generated GraphSpec
 result.artifacts     # {filename: Path} (populated only when recording is on)
 result.usage         # exact TokenUsage: input/output/total + per-model breakdown
 result.cost          # USD (None unless a pricing book is configured — see below)
+result.effective_budget  # the host-granted budget (planner request capped by policy)
+result.plan_attempts     # planner attempts (>1 if a rejected plan was repaired)
 ```
 
 ### Token usage & cost
@@ -273,7 +275,46 @@ EngineConfig(model=..., pricing={"my-model": {"input_per_1m": 0.5, "output_per_1
 All engine configuration lives on `EngineConfig`: the per-role models
 (`model`, `planner_model`, `worker_model`, `reducer_model`, `subagent_model`,
 `judge_model`), the `recording` policy, `planner` mode, `runs_dir`,
-`providers`, and `checkpointer`.
+`providers`, `checkpointer`, the host-owned `policy` (`ExecutionPolicy`), and
+`max_plan_attempts` (the plan-repair loop).
+
+### Governance: host-owned limits & plan repair
+
+The planner proposes a workflow; the **host** owns the limits. An
+`ExecutionPolicy` is the contract — and it's **enforced**, not advisory:
+
+```python
+from dynamic_subgraphs import DynamicSubgraphs, EngineConfig, ExecutionPolicy, Model
+
+engine = DynamicSubgraphs(EngineConfig(
+    model=Model("openai", "gpt-5.4-nano"),
+    policy=ExecutionPolicy(
+        max_nodes=6, max_llm_calls=4, max_depth=2, max_fanout=16,
+        allowed_tools=frozenset({"web_search"}),   # host ∩ registry
+    ),
+))
+r = engine.run("...")
+r.effective_budget   # the granted budget = min(host, planner request)
+```
+
+Enforced at validation (root **and** every nested `spawn_subgraph` child):
+
+- **Budgets** — node/LLM-call counts capped at `min(host, planner request)`; a
+  plan can't grant itself a larger budget.
+- **Allow-sets** — tool / subagent / node-kind use is the host ∩ registry
+  intersection; a plan naming a disallowed capability is rejected.
+- **Fan-out** — a `parallel_map` over more items than `max_fanout` halts before
+  any work fires.
+- **Nesting** — a child's budget is the parent's *remaining* allowance, so a nest
+  can't outspend the root; depth is capped at the tighter of the host and the rail.
+- **Wall-clock** — a run that outruns `max_wall_seconds` is abandoned (a hung
+  runner can't block forever).
+
+When a plan is rejected for a *recoverable* reason, the supervisor feeds the
+issues + host limits back into a re-plan, up to `max_plan_attempts` (**default
+2** — repair once; set `1` for strict block-and-report). So a too-ambitious plan
+is re-planned *within* the limits instead of just failing. Defaults are
+permissive-but-bounded, so a typical plan is unaffected.
 
 > ⚠️ **Use a capable model for the planner.** The planner must emit a valid
 > `GraphSpec`; small local models (7B-class, and in practice anything below

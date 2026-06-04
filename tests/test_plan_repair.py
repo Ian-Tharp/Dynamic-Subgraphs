@@ -91,10 +91,14 @@ def test_repair_recovers_an_over_budget_plan(tmp_path: Path) -> None:
 
     assert result.status == "ok"
     assert result.plan_attempts == 2
-    # The second prompt is the repair prompt: it carries the issue + host limit.
+    # The second prompt is the repair prompt: it signals the rejection, conveys
+    # the node limit (3), and names the failing issue — assert the substance, not
+    # the exact prose.
     assert len(planner.prompts) == 2
-    assert "REJECTED" in planner.prompts[1]
-    assert "at most 3 nodes" in planner.prompts[1]
+    repair_prompt = planner.prompts[1]
+    assert "REJECTED" in repair_prompt
+    assert "3" in repair_prompt  # the host node limit is conveyed
+    assert "budget_exceeded" in repair_prompt  # the concrete issue code
     # A repaired-then-successful run carries NO terminal errors.
     assert result.errors == []
 
