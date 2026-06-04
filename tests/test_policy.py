@@ -114,8 +114,11 @@ def test_subset_allow_set_intersects_with_registry() -> None:
 
 
 def test_empty_frozenset_is_ban_all_not_no_narrowing() -> None:
+    # Resolver semantics only: empty set => ban-all (distinct from None =
+    # no-narrowing). That the validator actually *rejects* a banned tool is
+    # covered by test_policy_enforcement.test_policy_bans_a_tool_outside_the_allowlist.
     eff = _resolve(ExecutionPolicy(allowed_tools=frozenset()), GraphBudget())
-    assert eff.allowed_tools == frozenset()  # forbids every tool, fail-closed
+    assert eff.allowed_tools == frozenset()
 
 
 def test_node_kind_intersection() -> None:

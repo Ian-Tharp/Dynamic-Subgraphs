@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from app.models import NodeKind
 from app.models.graph_spec import GraphBudget
 from app.policy import ExecutionPolicy
 from app.registry import RegistryValidationError, validate_graph_spec
@@ -163,3 +164,56 @@ def test_engine_default_policy_runs_unchanged(tmp_path: Path) -> None:
     assert result.ok
     assert result.effective_budget is not None
     assert result.effective_budget["max_nodes"] >= 1
+
+
+# ---------- allow-set enforcement (host ∩ registry) ----------
+
+
+def _tool_spec(spec_factory, make_node, make_edge):
+    return spec_factory(
+        nodes=[
+            make_node(
+                "search",
+                NodeKind.TOOL_CALL,
+                outputs=["r"],
+                params={"tool_name": "web_search", "args": {"q": "x"}},
+            )
+        ],
+        edges=[make_edge("START", "search"), make_edge("search", "END")],
+    )
+
+
+def test_policy_bans_a_tool_outside_the_allowlist(
+    spec_factory, make_node, make_edge
+) -> None:
+    spec = _tool_spec(spec_factory, make_node, make_edge)
+
+    # Host forbids all tools -> a tool_call naming web_search is rejected.
+    with pytest.raises(RegistryValidationError) as exc:
+        validate_graph_spec(spec, policy=ExecutionPolicy(allowed_tools=frozenset()))
+    assert "tool_not_allowlisted" in {i.code for i in exc.value.issues}
+
+
+def test_policy_allows_a_tool_inside_the_allowlist(
+    spec_factory, make_node, make_edge
+) -> None:
+    spec = _tool_spec(spec_factory, make_node, make_edge)
+
+    validated = validate_graph_spec(
+        spec, policy=ExecutionPolicy(allowed_tools=frozenset({"web_search"}))
+    )
+    assert validated.nodes[0].params["tool_name"] == "web_search"
+
+
+def test_policy_rejects_a_disallowed_node_kind(
+    spec_factory, make_node, make_edge
+) -> None:
+    spec = _tool_spec(spec_factory, make_node, make_edge)
+
+    # Only llm_call permitted -> the tool_call node is rejected.
+    with pytest.raises(RegistryValidationError) as exc:
+        validate_graph_spec(
+            spec,
+            policy=ExecutionPolicy(allowed_node_kinds=frozenset({NodeKind.LLM_CALL})),
+        )
+    assert "node_kind_not_allowed" in {i.code for i in exc.value.issues}
