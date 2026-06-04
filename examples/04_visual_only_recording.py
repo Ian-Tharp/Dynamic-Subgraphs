@@ -3,17 +3,17 @@
 `Recording.visual_only()` writes just `graph.mmd` under runs/<run_id>/ — handy
 for embedding a picture of the plan in a PR or doc without the trace/spec noise.
 
-Prerequisite: OPENAI_API_KEY in `.env`.
+Prerequisite: OPENAI_API_KEY in your environment (or a local `.env`).
 
 Run:
     uv run python examples/04_visual_only_recording.py
 """
 
-from pathlib import Path
-
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+# Loads a local .env if present; otherwise set your keys in the environment
+# (e.g. OPENAI_API_KEY). Works the same in-repo or standalone.
+load_dotenv()
 
 from dynamic_subgraphs import DynamicSubgraphs, EngineConfig, Model, Recording
 

@@ -4,18 +4,18 @@ A capable cloud model plans the graph (reliable structured output); a local
 model does the actual node work (private / cheap). Unset roles fall back to
 the worker, so set planner_model explicitly.
 
-Prerequisites: OPENAI_API_KEY in `.env`, and LM Studio running with the worker
+Prerequisites: OPENAI_API_KEY in your environment (or a local `.env`), and LM Studio running with the worker
 model loaded.
 
 Run:
     uv run python examples/03_hybrid_cloud_planner_local_worker.py
 """
 
-from pathlib import Path
-
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+# Loads a local .env if present; otherwise set your keys in the environment
+# (e.g. OPENAI_API_KEY). Works the same in-repo or standalone.
+load_dotenv()
 
 from dynamic_subgraphs import DynamicSubgraphs, EngineConfig, Model
 
@@ -26,7 +26,9 @@ engine = DynamicSubgraphs(
     )
 )
 
-result = engine.run("Compare two sources on coffee's health effects and recommend one.")
+result = engine.run(
+    "Compare electric and gasoline cars for a daily commuter and recommend one."
+)
 print("ok:", result.ok, "| status:", result.status)
 for key, value in result.values.items():
     print(f"  {key}: {str(value)[:200]}")

@@ -4,17 +4,17 @@
 prompt + emitted). Failures never raise — branch on `result.ok`/`result.status`
 and read `result.errors` and the generated `result.plan`.
 
-Prerequisite: OPENAI_API_KEY in `.env`.
+Prerequisite: OPENAI_API_KEY in your environment (or a local `.env`).
 
 Run:
     uv run python examples/05_debug_a_run.py
 """
 
-from pathlib import Path
-
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+# Loads a local .env if present; otherwise set your keys in the environment
+# (e.g. OPENAI_API_KEY). Works the same in-repo or standalone.
+load_dotenv()
 
 from dynamic_subgraphs import DynamicSubgraphs, EngineConfig, Model, Recording
 
