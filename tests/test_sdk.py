@@ -427,6 +427,29 @@ def test_capabilities_is_machine_readable_and_complete() -> None:
     assert "lmstudio" in caps["model_constructors"]
     assert "worker" in caps["model_roles"]
 
+    # node_kinds must mirror the registry's NodeKind enum exactly, so the
+    # agent-facing surface (and docs that read from it) can't drift from the
+    # vocabulary the compiler actually accepts.
+    from app.models import NodeKind
+
+    assert set(caps["node_kinds"]) == {k.value for k in NodeKind}
+    assert "branch" in caps["node_kinds"]
+
+
+def test_readme_enumerates_every_node_kind() -> None:
+    """The README's vocabulary list must name every NodeKind.
+
+    This exact drift shipped once: the registry had nine kinds but the README
+    listed eight (`branch` was missing). This guard fails if a kind is added to
+    the enum but not documented.
+    """
+    from app.models import NodeKind
+
+    readme = Path(__file__).resolve().parents[1] / "README.md"
+    text = readme.read_text(encoding="utf-8")
+    missing = [k.value for k in NodeKind if f"`{k.value}`" not in text]
+    assert not missing, f"README does not document node kinds: {missing}"
+
 
 def test_unknown_planner_raises_with_valid_list(tmp_path: Path) -> None:
     import pytest

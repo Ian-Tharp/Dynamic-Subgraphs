@@ -5,20 +5,25 @@
 [![CI](https://github.com/Ian-Tharp/Dynamic-Subgraphs/actions/workflows/ci.yml/badge.svg)](https://github.com/Ian-Tharp/Dynamic-Subgraphs/actions/workflows/ci.yml)
 [![Typed](https://img.shields.io/badge/typed-py.typed-blue.svg)](https://peps.python.org/pep-0561/)
 
-A governed dynamic graph runtime: a stable `Supervisor` plans, validates, and runs
-**transient** LangGraph workflows assembled from a bounded node registry and a
-validated `GraphSpec`, recording every run under `runs/<run_id>/`. The planner emits
-*plans*, never executable code; the compiler only instantiates registry-approved node
-kinds; and LangGraph types stay behind the `compiler/` and `runtime/` boundaries. An
-optional thin FastAPI layer exposes the supervisor over HTTP.
+A governed runtime for LLM-generated workflows. A stable `Supervisor` turns a prompt
+into a **validated plan** — data, never executable code — then compiles and runs it as
+a **transient** LangGraph workflow over a bounded, allowlisted vocabulary of node kinds,
+recording every run as a replayable, diffable, cost-attributed artifact under
+`runs/<run_id>/`.
+
+What that buys you over a free-form agent loop: the model proposes the workflow but
+never executes arbitrary code; the compiler only instantiates registry-approved node
+kinds; recursion is depth- and budget-capped; and every run — success or failure — is
+inspectable and replayable. LangGraph types stay behind the `compiler/` and `runtime/`
+boundaries. An optional thin FastAPI layer exposes the supervisor over HTTP.
 
 ## What can it build?
 
 From one prompt, the planner assembles a **transient** graph out of a small set
-of governed node kinds — `llm_call`, `tool_call`, `reduce`, `parallel_map`,
-`spawn_subagent`, `spawn_subgraph`, `wait_for_event`, `emit_artifact`. A few of
-the shapes it produces (these render in the same Mermaid the engine writes to
-`graph.mmd` for every run):
+of governed node kinds — `llm_call`, `tool_call`, `branch`, `reduce`,
+`parallel_map`, `spawn_subagent`, `spawn_subgraph`, `wait_for_event`,
+`emit_artifact`. A few of the shapes it produces (these render in the same Mermaid
+the engine writes to `graph.mmd` for every run):
 
 **Parallel research → recommend** — fan out to independent workers, then reduce:
 
@@ -55,6 +60,27 @@ graph TD
     report --> END
 ```
 
+**Dynamic routing** — classify the request, then take only the path it warrants:
+
+```mermaid
+graph TD
+    START([START])
+    END([END])
+    classify["classify_intent<br/>llm_call"]
+    route{"route<br/>branch"}
+    answer["answer<br/>llm_call"]
+    search["web_search<br/>tool_call"]
+    investigate["investigate<br/>spawn_subgraph"]
+    START --> classify
+    classify --> route
+    route -->|simple| answer
+    route -->|needs data| search
+    route -->|complex| investigate
+    search --> answer
+    investigate --> answer
+    answer --> END
+```
+
 **Human-in-the-loop** — pause for an external event, then resume:
 
 ```mermaid
@@ -70,7 +96,9 @@ graph TD
     finalize --> END
 ```
 
-**Nested composition** — a node plans and runs a bounded child graph:
+**Nested composition** — a node plans and runs a child graph on a fresh, isolated
+state envelope under enforced **depth and spend ceilings** (recursion that can't run
+away):
 
 ```mermaid
 graph TD
@@ -95,14 +123,42 @@ graph that governs every run:
 graph LR
     START([prompt]) --> plan
     plan["plan<br/>(GraphSpec)"] --> validate
-    validate["validate<br/>(registry)"] --> run
+    validate["validate<br/>(registry + budgets)"] --> run
     run["compile & run<br/>(transient graph)"] --> record
-    record["record<br/>(runs/&lt;id&gt;/)"] --> respond
+    record["record<br/>(spec·trace·mermaid·cost)"] --> replay
+    replay["replay / diff / audit"] --> respond
     respond([result]) --> END([END])
 ```
 
 The planner emits a **plan, never code**; the compiler only instantiates
-registry-approved node kinds; and every run — success or failure — is recorded.
+registry-approved node kinds; and every run — success or failure — is recorded as a
+replayable, diffable, cost-attributed artifact. That audit trail is the point: it's
+what a free-form agent loop can't give you.
+
+### When (not) to reach for it
+
+Dynamic Subgraphs earns its keep when **the shape of the work varies per input *and*
+you need the run governed and auditable**. Use it when:
+
+- The workflow can't be enumerated ahead of time — the right nodes/edges depend on
+  the request (heterogeneous intake, branching investigations, data-dependent
+  recursion whose depth isn't known until runtime).
+- You need an audit trail: a validated plan, a per-node trace, deterministic replay,
+  and cost attribution — for compliance, debugging, or reproducibility.
+- The model should *propose* the workflow but must not execute arbitrary code, and
+  its tool/capability surface must stay allowlisted and budget-capped.
+
+**Reach for something simpler when:**
+
+- **The shape is known.** If you can draw the DAG ahead of time, hand-author a fixed
+  [LangGraph](https://github.com/langchain-ai/langgraph) graph — it's cheaper and more
+  predictable. (If you can write the orchestration as a script, you don't need a
+  planner generating it.)
+- **The task is small.** A frontier model in a plain tool loop already decomposes a
+  one-to-three-step task in-context; a planning round-trip is pure overhead there.
+- **Your hard problem is global consistency, not orchestration.** Isolated child
+  envelopes are great for blast-radius but work *against* shared canonical state —
+  pair DS with a retrieval/consistency layer rather than expecting it to enforce one.
 
 ## Install
 
