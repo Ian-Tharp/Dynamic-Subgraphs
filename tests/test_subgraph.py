@@ -51,6 +51,7 @@ def test_runner_runs_child_and_hands_back_its_values() -> None:
         inputs,
         max_llm_calls=None,
         replay_of=None,
+        **_extra,
     ):
         captured.update(
             sub_goal=sub_goal,
@@ -60,6 +61,7 @@ def test_runner_runs_child_and_hands_back_its_values() -> None:
             inputs=inputs,
             max_llm_calls=max_llm_calls,
             replay_of=replay_of,
+            **_extra,
         )
         return ChildResult(
             values={"answer": 42}, counters={"llm_calls_consumed": 2}, status="ok"
@@ -96,6 +98,7 @@ def test_runner_pins_child_to_original_recorded_spec_during_replay() -> None:
         inputs,
         max_llm_calls=None,
         replay_of=None,
+        **_extra,
     ):
         captured.update(run_id=run_id, replay_of=replay_of)
         return ChildResult(values={}, counters={}, status="ok")
@@ -131,6 +134,52 @@ def test_runner_raises_when_child_fails() -> None:
 
     with pytest.raises(SubgraphChildFailed):
         runner(_state(), {"sub_goal": "g", "name": "c"})
+
+
+def test_runner_composes_child_budget_against_parent_remaining() -> None:
+    # The nest can't outspend the root: the child's node + LLM budgets are the
+    # parent's REMAINING allowance, and depth is the tighter of host vs rail.
+    captured: dict = {}
+
+    def launcher(sub_goal, *, run_id, graph_depth, parent_run_id, inputs, **extra):
+        captured.update(extra)
+        return ChildResult(values={}, counters={}, status="ok")
+
+    runner = build_spawn_subgraph_runner(launcher)
+    state = {
+        "values": {},
+        "metadata": {
+            "run_id": "p",
+            "graph_depth": 0,
+            "budget_max_nodes": 12,
+            "budget_max_llm_calls": 8,
+            "budget_max_depth": 2,
+        },
+        "counters": {"nodes_executed": 9, "llm_calls_consumed": 6},
+    }
+
+    runner(state, {"sub_goal": "g", "name": "c"})
+
+    assert captured["max_nodes"] == 3  # 12 - 9 remaining
+    assert captured["max_llm_calls"] == 2  # 8 - 6 remaining
+    assert captured["max_depth"] == 2  # min(host 2, rail 3)
+
+
+def test_runner_fails_closed_when_no_node_budget_remains() -> None:
+    # Real launcher path: parent has spent its whole node budget -> the child is
+    # refused rather than granted a fresh allowance.
+    # executor/planner are never reached — the fail-closed guard fires first.
+    runner = build_spawn_subgraph_runner(
+        make_child_launcher(planner=lambda g: None, executor=None)
+    )
+    state = {
+        "values": {},
+        "metadata": {"run_id": "p", "graph_depth": 0, "budget_max_nodes": 4},
+        "counters": {"nodes_executed": 4},  # 0 remaining
+    }
+
+    with pytest.raises(SubgraphChildFailed):
+        runner(state, {"sub_goal": "g", "name": "c"})
 
 
 # ---------- the launcher (real executor, mock runners) ----------

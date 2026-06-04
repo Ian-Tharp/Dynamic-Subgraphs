@@ -39,6 +39,10 @@ from app.runtime.runners import NodeRunner
 from app.runtime.wrappers import node_counter_delta
 
 # Per-Send payload keys (live in state.values for the worker's branch only)
+# Fallback fan-out cap when metadata carries none (e.g. a direct-executor test
+# that didn't go through the engine). Mirrors the ExecutionPolicy default.
+_DEFAULT_MAX_FANOUT = 64
+
 _PM_ITEM_KEY = "_pm_item"
 _PM_INDEX_KEY = "_pm_index"
 
@@ -112,6 +116,27 @@ def make_parallel_map_dispatcher(
                 error_message=(
                     f"parallel_map source key '{over_key}' is not a list "
                     f"(got {type(items).__name__})"
+                ),
+            )
+
+        # Host fan-out cap: enforced *after* decode (so a JSON-string list is
+        # measured by its real length), *before* any Send is emitted. Fail-closed
+        # — never truncate. The cap rides in metadata (seeded by the executor from
+        # the granted budget); fall back to the policy default if unseeded.
+        max_fanout = int(
+            (state.get("metadata", {}) or {}).get(
+                "budget_max_fanout", _DEFAULT_MAX_FANOUT
+            )
+        )
+        if len(items) > max_fanout:
+            return _halt_with_error(
+                node=node,
+                start_event=start_event,
+                started_perf=started_perf,
+                error_type="FanoutExceeded",
+                error_message=(
+                    f"parallel_map fan-out {len(items)} exceeds the host "
+                    f"max_fanout {max_fanout}"
                 ),
             )
 

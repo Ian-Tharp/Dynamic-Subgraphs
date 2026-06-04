@@ -58,6 +58,19 @@ def validate_graph_spec(
         registry_subagents=reg.subagents,
         registry_kinds=reg.allowed_kinds(),
     )
+    # Enforce the host allow-set. Narrow the registry to the effective
+    # (host ∩ registry) tools/subagents so the existing per-node allowlist gates
+    # reject anything the policy forbids; node kinds are checked separately
+    # below against effective.allowed_node_kinds. (When the policy adds no
+    # narrowing, effective.* equals the registry's own sets and this is a no-op.)
+    if (
+        effective.allowed_tools != reg.tools
+        or effective.allowed_subagents != reg.subagents
+    ):
+        reg = Registry(
+            tools=effective.allowed_tools,
+            subagents=effective.allowed_subagents,
+        )
     issues: list[RegistryValidationIssue] = []
 
     if spec.schema_version != GRAPH_SPEC_SCHEMA_VERSION:
@@ -133,6 +146,23 @@ def validate_graph_spec(
             )
         )
 
+    # Host policy may restrict which node kinds a plan may use (intersection with
+    # the registry). When the policy adds no narrowing this set is the full
+    # registry vocabulary, so nothing is rejected.
+    for node in normalized_nodes:
+        if node.kind not in effective.allowed_node_kinds:
+            issues.append(
+                RegistryValidationIssue(
+                    code="node_kind_not_allowed",
+                    message=(
+                        f"Node kind '{node.kind.value}' is not allowed by the "
+                        f"host policy"
+                    ),
+                    node_id=node.id,
+                    field="kind",
+                )
+            )
+
     issues.extend(_validate_edges(spec, {n.id for n in normalized_nodes}))
     issues.extend(_validate_inputs(normalized_nodes, spec.edges))
     issues.extend(_detect_cycles(spec, {n.id for n in normalized_nodes}))
@@ -150,6 +180,7 @@ def validate_graph_spec(
             "max_llm_calls": effective.max_llm_calls,
             "max_depth": effective.max_depth,
             "max_wall_seconds": effective.max_wall_seconds,
+            "max_fanout": effective.max_fanout,
         }
     )
     return spec.model_copy(update={"nodes": normalized_nodes, "budget": granted})

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Any
 
 from app.models.graph_spec import GraphBudget
 from app.models.node_kinds import NodeKind
@@ -122,14 +123,14 @@ class EffectiveBudget:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, object]) -> EffectiveBudget:
+    def from_dict(cls, data: dict[str, Any]) -> EffectiveBudget:
         """Reconstruct from :meth:`as_dict` output (e.g. seeded run metadata)."""
 
         def _ints(key: str) -> int:
-            return int(data[key])  # type: ignore[arg-type]
+            return int(data[key])
 
         def _strs(key: str) -> frozenset[str]:
-            return frozenset(str(x) for x in (data.get(key) or []))  # type: ignore[union-attr]
+            return frozenset(str(x) for x in (data.get(key) or []))
 
         kinds = data.get("allowed_node_kinds") or []
         return cls(
@@ -140,7 +141,7 @@ class EffectiveBudget:
             max_wall_seconds=_ints("max_wall_seconds"),
             allowed_tools=_strs("allowed_tools"),
             allowed_subagents=_strs("allowed_subagents"),
-            allowed_node_kinds=frozenset(NodeKind(str(k)) for k in kinds),  # type: ignore[union-attr]
+            allowed_node_kinds=frozenset(NodeKind(str(k)) for k in kinds),
         )
 
 

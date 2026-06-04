@@ -7,6 +7,31 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
 
 ## [Unreleased]
 
+### Changed
+- **Runtime governance guards — the host policy is now enforced end-to-end, not
+  just on numeric budgets.** At validation (root run *and* every nested
+  `spawn_subgraph` child): **allow-sets** (tools / subagents / node kinds) are
+  the host ∩ registry intersection — a plan naming a disallowed capability is
+  rejected (`tool_not_allowlisted` / `node_kind_not_allowed`); **nested budgets
+  compose** — a child's node/LLM/depth budget is the parent's *remaining*
+  allowance, so a nest can't outspend the root, and nesting depth is capped at
+  the tighter of the host `max_depth` and the hard rail. At runtime:
+  `parallel_map` **fan-out** over more than the granted `max_fanout` halts
+  fail-closed before any work fires; a run that outruns `max_wall_seconds` is
+  **abandoned** (daemon invoke thread + bounded join, so a hung runner can't
+  block forever). Verified with offline tests and a live e2e.
+
+### Added
+- `GraphBudget.max_fanout` (default 64) — the planner may request a fan-out
+  limit; the effective cap is `min(host, request)`, stamped and enforced.
+
+### Fixed
+- `replay()` re-validates the recorded spec against the **current** host policy
+  before re-executing, so a spec recorded under looser limits no longer replays
+  if the host has since tightened them (was trusted verbatim).
+- `app/policy.py` is now type-checked in CI (mypy) alongside the public package;
+  removed stale `type: ignore`s. (Broader `app/*` typing is a follow-up.)
+
 ### Documentation
 - README reframed around the actual value proposition — a *governed, auditable*
   runtime for LLM-generated workflows (validated plans, allowlisted vocabulary,

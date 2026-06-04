@@ -275,6 +275,28 @@ def test_parallel_map_halts_when_over_key_is_not_a_list() -> None:
     assert result.state["errors"][0]["type"] == "TypeError"
 
 
+def test_parallel_map_halts_when_fanout_exceeds_host_cap() -> None:
+    from app.policy import ExecutionPolicy
+
+    spec = _spec_with_parallel_map()
+    # Host caps fan-out at 2; the granted budget is stamped onto the spec.
+    validated = validate_graph_spec(spec, policy=ExecutionPolicy(max_fanout=2))
+    assert validated.budget.max_fanout == 2
+
+    items = [f"item-{i}" for i in range(5)]  # 5 > cap 2
+    executor = LangGraphExecutor(
+        runners={NodeKind.LLM_CALL: _seed_for_node_then_identity(items)}
+    )
+
+    result = executor.execute(executor.compile(validated), run_id="pm-fanout")
+
+    assert result.ok is False
+    assert "max_fanout" in result.error
+    assert result.state["errors"][0]["type"] == "FanoutExceeded"
+    # Fail-closed before any worker ran: no results produced.
+    assert "fan_results" not in result.state.get("values", {})
+
+
 def test_parallel_map_halts_when_a_worker_raises() -> None:
     spec = _spec_with_parallel_map()
     validated = validate_graph_spec(spec)

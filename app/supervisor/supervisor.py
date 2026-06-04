@@ -10,6 +10,7 @@ from typing import Any
 from app.models import GraphSpec
 from app.policy import ExecutionPolicy
 from app.recording import Recorder, RunRecord
+from app.registry import RegistryValidationError, validate_graph_spec
 from app.runtime import ExecutionResult, GraphExecutor
 from app.supervisor.graph import build_supervisor_graph
 from app.supervisor.iteration import (
@@ -269,6 +270,41 @@ class Supervisor:
                         "stage": "replay_load_spec",
                         "type": type(exc).__name__,
                         "message": str(exc),
+                    }
+                ],
+            )
+
+        # Re-validate against the CURRENT host policy: a spec recorded under a
+        # looser policy must not replay if the host has since tightened limits
+        # (the recorded budget is otherwise trusted verbatim). Idempotent when
+        # the policy is unchanged. Re-stamps the granted budget.
+        try:
+            spec = validate_graph_spec(spec, policy=self._policy)
+        except RegistryValidationError as exc:
+            return SupervisorResult(
+                run_id=effective_new_run_id,
+                status="replay_failed",
+                response=(
+                    f"Replay halted: recorded spec for {run_id!r} violates the "
+                    f"current policy: {exc}"
+                ),
+                validated_spec=spec,
+                result=None,
+                record=None,
+                errors=[
+                    {
+                        "stage": "replay_validate",
+                        "type": "RegistryValidationError",
+                        "message": str(exc),
+                        "issues": [
+                            {
+                                "code": i.code,
+                                "message": i.message,
+                                "node_id": i.node_id,
+                                "field": i.field,
+                            }
+                            for i in exc.issues
+                        ],
                     }
                 ],
             )

@@ -190,3 +190,47 @@ caps["artifacts"]           # ["spec.json", "trace.jsonl", ..., "emitted"]
 caps["statuses"]            # ["ok", "plan_failed", ...]
 result.to_dict()            # JSON-safe view of any RunResult
 ```
+
+## 10. Govern what a plan may do (host-owned policy)
+
+**When:** you want hard, enforced limits on a planned workflow — budgets the
+planner can't widen, an allowlist it can't escape, and a fan-out/wall-clock cap.
+
+```python
+from dynamic_subgraphs import DynamicSubgraphs, EngineConfig, ExecutionPolicy, Model
+
+engine = DynamicSubgraphs(EngineConfig(
+    model=Model("openai", "gpt-5.4-nano"),
+    policy=ExecutionPolicy(
+        max_nodes=6, max_llm_calls=4, max_depth=2, max_fanout=16,
+        max_wall_seconds=60,
+        allowed_tools=frozenset({"web_search"}),     # host ∩ registry
+    ),
+))
+r = engine.run("...")
+r.effective_budget    # the granted budget = min(host, planner request)
+```
+
+Everything is enforced at validation — for the root run **and** every nested
+`spawn_subgraph` child: budgets are `min(host, request)`, a disallowed tool /
+subagent / node kind is rejected, a `parallel_map` over more than `max_fanout`
+items halts, a nest can't outspend the root, and a run that outruns
+`max_wall_seconds` is abandoned.
+
+## 11. Repair an over-ambitious plan instead of failing
+
+**When:** a plan is rejected (e.g. it exceeds the budget) — re-plan with the
+validator's issues + the host limits fed back, rather than stopping.
+
+```python
+# Default: repair once (max_plan_attempts=2). A too-big plan is re-planned
+# within the limits and usually succeeds.
+engine = DynamicSubgraphs(EngineConfig(model=Model("openai", "gpt-5.4-nano")))
+r = engine.run("...")
+r.plan_attempts       # 1 normally; 2 if the first plan was repaired
+
+# Strict: block + report on the first validation failure (no retry).
+engine = DynamicSubgraphs(EngineConfig(
+    model=Model("openai", "gpt-5.4-nano"), max_plan_attempts=1,
+))
+```

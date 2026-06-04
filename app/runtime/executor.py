@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -22,12 +23,17 @@ _DEFAULT_RECURSION_LIMIT = 25
 _STEPS_PER_NODE = 4
 
 
+class _DeadlineExceeded(Exception):
+    """Raised when a graph execution outruns its wall-clock budget."""
+
+
 def _run_graph_isolated(
     graph: Any,
     payload: Any,
     *,
     config: dict[str, Any],
     inspect_config: dict[str, Any] | None,
+    hard_timeout_s: float | None = None,
 ) -> tuple[Any, bool, list[Any]]:
     """Invoke a compiled graph in a dedicated thread; return state + pause info.
 
@@ -60,9 +66,16 @@ def _run_graph_isolated(
         except BaseException as exc:  # re-raised on the caller thread below
             box["error"] = exc
 
-    thread = threading.Thread(target=_run, name="ds-graph-invoke")
+    # Daemon thread + bounded join: a runner that hangs (e.g. an LLM HTTP call
+    # with no client timeout) no longer blocks the caller forever and dies with
+    # the process. On timeout the caller regains control; the abandoned thread
+    # may keep running until its in-flight call returns (documented limitation —
+    # wall-clock bounds *latency*, the llm-call budget bounds *spend*).
+    thread = threading.Thread(target=_run, name="ds-graph-invoke", daemon=True)
     thread.start()
-    thread.join()
+    thread.join(hard_timeout_s)
+    if thread.is_alive():
+        raise _DeadlineExceeded()
     if "error" in box:
         raise box["error"]
     return box["ok"]
@@ -165,27 +178,58 @@ class LangGraphExecutor:
     ) -> ExecutionResult:
         concrete = _coerce_compiled_graph(compiled)
         config = self._invoke_config(concrete.spec, run_id)
-        # Seed caller-supplied metadata (e.g. graph_depth for nested subgraphs)
-        # while keeping run_id and this graph's own budget authoritative — both
-        # are set after the caller's dict so a caller can't override them. The
-        # budget lets a spawn_subgraph node clamp a child to the parent's
-        # remaining (budget_max_llm_calls - llm_calls_consumed).
+        md_in = initial_metadata or {}
+        # An absolute monotonic deadline bounds the whole run. A nested child
+        # reuses the parent's deadline (propagated in metadata) so the deadline
+        # spans the tree; the root mints it from its granted max_wall_seconds.
+        deadline = md_in.get("wall_deadline_monotonic")
+        if deadline is None:
+            deadline = time.monotonic() + concrete.spec.budget.max_wall_seconds
+        # Seed caller metadata (e.g. graph_depth for nested subgraphs) while
+        # keeping run_id and this graph's own granted budget authoritative —
+        # set after the caller's dict so a caller can't override them. The
+        # budget lets a spawn_subgraph node clamp a child (budget_max_llm_calls
+        # - llm_calls_consumed) and parallel_map cap its fan-out.
         metadata = {
-            **(initial_metadata or {}),
+            **md_in,
+            "budget_max_nodes": concrete.spec.budget.max_nodes,
             "budget_max_llm_calls": concrete.spec.budget.max_llm_calls,
+            "budget_max_depth": concrete.spec.budget.max_depth,
+            "budget_max_fanout": concrete.spec.budget.max_fanout,
+            "wall_deadline_monotonic": deadline,
             "run_id": run_id,
         }
         # Only the checkpointer path can be inspected for interrupts (it carries
         # the thread_id); without one there's no persisted state to query.
         inspect_config = config if self._checkpointer is not None else None
-        state, paused, payloads = _run_graph_isolated(
-            concrete.graph,
-            make_initial_state(inputs=inputs, metadata=metadata),
-            config=config,
-            inspect_config=inspect_config,
-        )
+        try:
+            state, paused, payloads = _run_graph_isolated(
+                concrete.graph,
+                make_initial_state(inputs=inputs, metadata=metadata),
+                config=config,
+                inspect_config=inspect_config,
+                hard_timeout_s=max(0.0, deadline - time.monotonic()),
+            )
+        except _DeadlineExceeded:
+            return self._timeout_result(concrete, run_id)
         return self._build_result(
             concrete, state, run_id, paused=paused, interrupt_payloads=payloads
+        )
+
+    def _timeout_result(
+        self, concrete: _LangGraphCompiledGraph, run_id: str
+    ) -> ExecutionResult:
+        trace = RunTrace(run_id=run_id, graph_id=concrete.spec.graph_id, events=[])
+        return ExecutionResult(
+            state={},  # type: ignore[typeddict-item]
+            trace=trace,
+            ok=False,
+            error=(
+                f"wall-clock deadline ({concrete.spec.budget.max_wall_seconds}s) "
+                f"exceeded"
+            ),
+            paused=False,
+            interrupt_payloads=[],
         )
 
     def resume(
