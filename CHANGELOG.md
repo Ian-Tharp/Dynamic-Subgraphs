@@ -7,6 +7,17 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
 
 ## [Unreleased]
 
+### Documentation
+- README reframed around the actual value proposition — a *governed, auditable*
+  runtime for LLM-generated workflows (validated plans, allowlisted vocabulary,
+  budget-capped recursion, replayable runs), rather than leading with "the model
+  invents the topology".
+- Added the missing `branch` node kind to the README's vocabulary list (the
+  registry ships nine kinds; the README listed eight) and a dynamic-routing diagram
+  that shows it.
+- Added a "When (not) to reach for it" section — when a fixed graph or a plain
+  tool loop is the better tool, stated plainly.
+
 ### Changed
 - Removed `mock_document_extract` from the default tool allowlist (it echoed
   empty content, so a planner that picked it for a retrieval/compare task
