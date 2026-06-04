@@ -233,6 +233,8 @@ class RunResult:
         effective_budget: the host-*granted* budget for this run — the planner's
             request capped by the `ExecutionPolicy` (`min(host, request)` per
             field). None if planning/validation failed. Equals `plan.budget`.
+        plan_attempts: how many times the planner ran (1 unless the plan-repair
+            loop re-planned after a recoverable validation failure).
 
     Use `to_dict()` for a JSON-safe view (handy for logging or handing to
     another tool/agent).
@@ -248,6 +250,7 @@ class RunResult:
     usage: TokenUsage = field(default_factory=TokenUsage)
     cost: float | None = None
     effective_budget: dict[str, Any] | None = None
+    plan_attempts: int = 1
 
     @property
     def ok(self) -> bool:
@@ -277,6 +280,7 @@ class RunResult:
             },
             "cost": self.cost,
             "effective_budget": self.effective_budget,
+            "plan_attempts": self.plan_attempts,
         }
 
     @classmethod
@@ -318,6 +322,7 @@ class RunResult:
             usage=usage,
             cost=cost,
             effective_budget=effective_budget,
+            plan_attempts=getattr(result, "plan_attempts", 1),
         )
 
 
@@ -365,6 +370,12 @@ class EngineConfig:
     # so leaving this unset preserves prior behavior for typical plans. Set a
     # stricter `ExecutionPolicy(...)` to cap budgets the planner can never widen.
     policy: ExecutionPolicy = field(default_factory=ExecutionPolicy)
+    # Plan-repair loop. When a plan is rejected by the validator for a
+    # *recoverable* reason (e.g. a budget overrun or a dangling edge), the
+    # issues + host limits are fed back into a re-plan, up to this many planner
+    # attempts. Default 2 (repair once) makes plans "just work" more often; set
+    # 1 for strict block-and-report on the first validation failure.
+    max_plan_attempts: int = 2
     # Optional manual price override for cost, e.g.
     # {"gpt-5.4-nano": {"input_per_1m": 0.2, "output_per_1m": 1.25}}.
     # With the `cost` extra installed, cost is computed automatically (LiteLLM)
@@ -439,6 +450,7 @@ class DynamicSubgraphs:
         self._checkpointer = config.checkpointer
         self._pricing = config.pricing
         self._policy = config.policy
+        self._max_plan_attempts = config.max_plan_attempts
 
     @property
     def config(self) -> EngineConfig:
@@ -534,6 +546,7 @@ class DynamicSubgraphs:
             artifact_sink=artifact_sink,
             chat_callbacks=[usage_handler],
             policy=self._policy,
+            max_plan_attempts=self._max_plan_attempts,
         )
         result = supervisor.run(prompt, run_id=run_id)
 

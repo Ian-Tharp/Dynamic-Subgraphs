@@ -27,6 +27,15 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
   from the README and CONTRIBUTING.
 
 ### Changed
+- **Plan-repair loop (default ON).** When a plan is rejected by the validator
+  for a *recoverable* reason (budget overrun, dangling edge, missing input,
+  bad branch, reserved id…), the supervisor now feeds the issues + the host
+  limits back into a re-plan, up to `EngineConfig(max_plan_attempts=...)`
+  planner attempts. **Default is 2** (repair once) — a behavior change that
+  makes plans "just work" more often; set `max_plan_attempts=1` for strict
+  block-and-report on the first failure. Each attempt is another planner call;
+  un-recoverable issues never retry. `RunResult.plan_attempts` reports how many
+  it took. Verified live (a real over-budget plan recovered on the repair pass).
 - **Host-owned budget enforcement.** Budget validation now enforces the
   host-owned `ExecutionPolicy` (`EngineConfig(policy=...)`), not the planner's
   self-declared `GraphBudget`: the effective limit per field is
@@ -56,6 +65,10 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
   planner-chosen id from shadowing a generated node.
 
 ### Added
+- `EngineConfig(max_plan_attempts=...)` — bounds the plan-repair loop (see
+  *Changed*); default 2, set 1 for strict block-and-report.
+- `RunResult.plan_attempts` — how many planner attempts a run took (1 unless the
+  repair loop re-planned), included in `to_dict()`.
 - `EngineConfig(policy=ExecutionPolicy(...))` — host-owned budget governance,
   now **wired and enforced** (see *Changed*). `ExecutionPolicy` is exported from
   the public `dynamic_subgraphs` facade.

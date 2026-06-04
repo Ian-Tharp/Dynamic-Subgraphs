@@ -42,6 +42,9 @@ class SupervisorResult:
     result: ExecutionResult | None
     record: RunRecord | None
     errors: list[dict]
+    # How many times the planner ran (1 unless the plan-repair loop re-planned
+    # after a recoverable validation failure).
+    plan_attempts: int = 1
 
 
 class Supervisor:
@@ -60,16 +63,19 @@ class Supervisor:
         executor: GraphExecutor,
         recorder: Recorder,
         policy: ExecutionPolicy | None = None,
+        max_plan_attempts: int = 1,
     ) -> None:
         self._planner = planner
         self._executor = executor
         self._recorder = recorder
         self._policy = policy or ExecutionPolicy()
+        self._max_plan_attempts = max(1, max_plan_attempts)
         self._graph = build_supervisor_graph(
             planner=planner,
             executor=executor,
             recorder=recorder,
             policy=self._policy,
+            max_plan_attempts=self._max_plan_attempts,
         ).compile()
 
     def run(self, prompt: str, *, run_id: str) -> SupervisorResult:
@@ -82,6 +88,7 @@ class Supervisor:
             result=final_state.get("result"),
             record=final_state.get("record"),
             errors=list(final_state.get("errors", [])),
+            plan_attempts=final_state.get("plan_attempts", 1),
         )
 
     def run_iteratively(
