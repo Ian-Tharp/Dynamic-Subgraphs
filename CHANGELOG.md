@@ -39,6 +39,14 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
   planner-chosen id from shadowing a generated node.
 
 ### Added
+- ExecutionPolicy foundation (host-owned governance, PR1 — types + resolver
+  only, not yet wired): `app.policy` with `ExecutionPolicy`, `EffectiveBudget`,
+  `RemainingBudget`, and the pure `resolve_effective_budget` (effective budget =
+  `min(planner, host, parent-remaining)` per field; vocabulary = host ∩
+  registry; a child resolution refuses to fall back to a full budget). No
+  behavior change until later slices wire it into the validator/executor.
+  `MAX_DEPTH_CEILING` now lives in `app.policy` (re-exported from the validator).
+  Design: `docs/specs/2026-06-04-execution-policy-design.md`.
 - Eval/value layer foundation (Slice 7, PR1 — types only, OFF by default):
   `dynamic_subgraphs.eval` with the `EvalGate` protocol, the persisted
   `EvalResult` (+ `ScoreComponent`, `RunFingerprint`, `EvalReference`,

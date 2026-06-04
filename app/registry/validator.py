@@ -12,13 +12,15 @@ from app.models.graph_spec import (
     NodeSpec,
 )
 from app.models.node_kinds import NodeKind
+from app.policy import MAX_DEPTH_CEILING
 from app.registry.errors import RegistryValidationError, RegistryValidationIssue
 from app.registry.registry import Registry
 
-# Hard ceiling on a graph's declared recursion depth. Nested subgraphs may never
-# request more than this, so the recursion rail holds regardless of what a
-# planner emits. Matches the canonical design's shallow-depth guidance.
-MAX_DEPTH_CEILING = 3
+# `MAX_DEPTH_CEILING` is defined in `app.policy` (host-governance source of
+# truth) and re-exported here so `from app.registry.validator import
+# MAX_DEPTH_CEILING` keeps working for callers like `subgraph.py`.
+__all__ = ["MAX_DEPTH_CEILING", "validate_graph_spec"]
+
 
 # Node ids must be simple identifiers and must not collide with reserved names:
 # the graph terminals (START/END) or the parallel_map internal marker, since the
