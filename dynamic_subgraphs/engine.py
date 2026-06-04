@@ -66,10 +66,11 @@ Model = ModelRef
 # Anything the engine accepts as a recording policy.
 RecordingInput = bool | Artifact | Iterable[Artifact] | Recording
 
-# Pricing for cost: {model_name: {"input_per_1m": float, "output_per_1m": float}}.
-# Keyed by the model name LangChain reports in usage_metadata (e.g.
-# "gpt-5.4-nano", "claude-haiku-4-5"). We ship no table — pricing drifts, so
-# the dev supplies it (or uses LangSmith's server-side cost).
+# Manual price override: {model_name: {"input_per_1m": float, "output_per_1m": float}}.
+# Keyed by the model alias (also matches dated snapshots by prefix). Usually you
+# don't need this — install the `cost` extra and cost is computed automatically
+# from LiteLLM's maintained price map. Use this to override, or to price local /
+# custom-endpoint models LiteLLM doesn't know.
 Pricing = Mapping[str, Mapping[str, float]]
 
 __all__ = [
@@ -192,22 +193,51 @@ def _price_for(name: str, pricing: Pricing) -> Mapping[str, float] | None:
     return pricing[max(prefixes, key=len)] if prefixes else None
 
 
-def _compute_cost(usage: TokenUsage, pricing: Pricing | None) -> float | None:
-    """Cost in USD from a dev-supplied price book, or None if not configured.
+def _litellm_cost(model: str, input_tokens: int, output_tokens: int) -> float | None:
+    """Cost via LiteLLM's maintained price map (the `cost` extra), or None.
 
-    Models present in `by_model` but absent from `pricing` are skipped (their
-    cost is simply not counted), so a partial price book still works.
+    Computed locally from the token counts — no network call. Returns None if
+    `litellm` isn't installed, or doesn't recognize the model.
     """
-    if not pricing:
+    try:
+        import litellm
+    except ImportError:
         return None
+    litellm.suppress_debug_info = True  # quiet its stderr chatter on a miss
+    try:
+        prompt_cost, completion_cost = litellm.cost_per_token(
+            model=model,
+            prompt_tokens=int(input_tokens),
+            completion_tokens=int(output_tokens),
+        )
+        return float(prompt_cost) + float(completion_cost)
+    except Exception:
+        return None
+
+
+def _compute_cost(usage: TokenUsage, pricing: Pricing | None) -> float | None:
+    """Total USD cost, or None if no price source resolved any model.
+
+    Per model, a manual `pricing` entry wins (override / local/custom models);
+    otherwise LiteLLM's price map is used when the `cost` extra is installed.
+    Models neither source can price are skipped, so a partial price book and a
+    mixed-provider run both work.
+    """
     total = 0.0
+    priced = False
     for name, u in usage.by_model.items():
-        price = _price_for(name, pricing)
-        if price is None:
+        inp, out = u["input_tokens"], u["output_tokens"]
+        price = _price_for(name, pricing) if pricing else None
+        if price is not None:
+            total += inp / 1_000_000 * float(price.get("input_per_1m", 0.0))
+            total += out / 1_000_000 * float(price.get("output_per_1m", 0.0))
+            priced = True
             continue
-        total += u["input_tokens"] / 1_000_000 * float(price.get("input_per_1m", 0.0))
-        total += u["output_tokens"] / 1_000_000 * float(price.get("output_per_1m", 0.0))
-    return round(total, 6)
+        auto = _litellm_cost(name, inp, out)
+        if auto is not None:
+            total += auto
+            priced = True
+    return round(total, 6) if priced else None
 
 
 @dataclass
@@ -228,8 +258,9 @@ class RunResult:
             (node-level failures additionally carry "node_id").
         usage: exact `TokenUsage` for the run (always populated; zero for mock
             runs). Includes a per-model breakdown.
-        cost: total USD cost, or None unless a `pricing` book was set on the
-            `EngineConfig`. (Tokens are exact and free; cost needs prices.)
+        cost: total USD cost. Auto-computed from LiteLLM's price map when the
+            `cost` extra is installed; or from `EngineConfig(pricing=...)`;
+            else None. (Tokens are always exact and free — cost needs prices.)
 
     Use `to_dict()` for a JSON-safe view (handy for logging or handing to
     another tool/agent).
@@ -346,11 +377,11 @@ class EngineConfig:
     runs_dir: str | Path = "runs"
     providers: ProviderRegistry | None = None
     checkpointer: Any | None = None
-    # Optional price book for cost, e.g.
+    # Optional manual price override for cost, e.g.
     # {"gpt-5.4-nano": {"input_per_1m": 0.2, "output_per_1m": 1.25}}.
-    # Key by the model alias you pass; it also matches the provider's dated
-    # snapshot (gpt-5.4-nano-2026-03-17) by prefix. Tokens are always exact
-    # regardless; this only enables `result.cost`.
+    # With the `cost` extra installed, cost is computed automatically (LiteLLM)
+    # and you usually don't need this — set it only to override a price or to
+    # cover local / custom-endpoint models LiteLLM doesn't know.
     pricing: Pricing | None = None
 
     def model_selection(self) -> ModelSelection:

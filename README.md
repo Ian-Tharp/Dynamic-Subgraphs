@@ -114,6 +114,7 @@ uv add "dynamic-subgraphs[openai]"       # + OpenAI provider
 uv add "dynamic-subgraphs[anthropic]"    # + Anthropic provider
 uv add "dynamic-subgraphs[ollama]"       # + local Ollama provider
 uv add "dynamic-subgraphs[api]"          # + FastAPI HTTP surface
+uv add "dynamic-subgraphs[cost]"         # + automatic result.cost (LiteLLM prices)
 uv add "dynamic-subgraphs[all]"          # everything
 ```
 
@@ -121,7 +122,7 @@ Or with pip:
 
 ```bash
 pip install dynamic-subgraphs
-pip install "dynamic-subgraphs[openai]"  # same extras: anthropic, ollama, api, all
+pip install "dynamic-subgraphs[openai]"  # same extras: anthropic, ollama, api, cost, all
 ```
 
 The core install is intentionally light (`langgraph`, `langchain-core`,
@@ -186,22 +187,31 @@ result.cost          # USD (None unless a pricing book is configured — see bel
 
 `result.usage` is **always** populated with the providers' own reported token
 counts (via LangChain's usage callback — exact, all providers, no estimation).
-**Cost** is opt-in: pass a `pricing` book on `EngineConfig` (we don't ship a
-price table since prices drift). Key it by the model alias — it also matches the
-provider's dated snapshot (`gpt-5.4-nano-2026-03-17`) by prefix:
 
-```python
-engine = DynamicSubgraphs(EngineConfig(
-    model=Model("openai", "gpt-5.4-nano"),
-    pricing={"gpt-5.4-nano": {"input_per_1m": 0.20, "output_per_1m": 1.25}},
-))
-r = engine.run("...")
-r.usage.total_tokens   # e.g. 3233   (exact, free)
-r.cost                 # e.g. 0.0013 (USD; None if no pricing)
+**Cost** works automatically with the `cost` extra (it uses
+[LiteLLM](https://github.com/BerriAI/litellm)'s maintained price map — you don't
+specify prices, and we don't ship a table that goes stale):
+
+```bash
+pip install "dynamic-subgraphs[openai,cost]"
 ```
 
-If you already use LangSmith, it computes cost server-side too — no price book
-needed there.
+```python
+engine = DynamicSubgraphs(EngineConfig(model=Model("openai", "gpt-5.4-nano")))
+r = engine.run("...")
+r.usage.total_tokens   # e.g. 3233   (exact, free, always)
+r.cost                 # e.g. 0.0021 (USD — auto-computed)
+```
+
+Without the extra, `result.cost` is `None` (tokens are still exact). You can
+also pass a manual `pricing` book on `EngineConfig` to **override** prices or to
+cover local / custom-endpoint models LiteLLM doesn't know:
+
+```python
+EngineConfig(model=..., pricing={"my-model": {"input_per_1m": 0.5, "output_per_1m": 1.0}})
+```
+
+(If you use LangSmith, it computes cost server-side as well.)
 
 All engine configuration lives on `EngineConfig`: the per-role models
 (`model`, `planner_model`, `worker_model`, `reducer_model`, `subagent_model`,

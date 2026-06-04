@@ -334,11 +334,52 @@ def test_compute_cost_from_price_book() -> None:
     assert _compute_cost(usage, pricing) == 1.45
 
 
-def test_compute_cost_none_without_pricing() -> None:
+def test_compute_cost_none_when_nothing_priceable(monkeypatch) -> None:
+    import sys
+
+    monkeypatch.setitem(sys.modules, "litellm", None)  # force auto-cost off
     usage = TokenUsage(by_model={"m": {"input_tokens": 1000, "output_tokens": 500}})
+    # No price source resolves the model -> None (not a misleading $0.00).
     assert _compute_cost(usage, None) is None
-    # Unknown models are skipped (partial price book still works).
-    assert _compute_cost(usage, {"other": {"input_per_1m": 1.0}}) == 0.0
+    assert _compute_cost(usage, {"other": {"input_per_1m": 1.0}}) is None
+
+
+def test_litellm_auto_cost_when_available(monkeypatch) -> None:
+    import sys
+    import types
+
+    fake = types.SimpleNamespace(
+        suppress_debug_info=False,
+        cost_per_token=lambda model, prompt_tokens, completion_tokens: (
+            prompt_tokens * 1e-6,
+            completion_tokens * 2e-6,
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "litellm", fake)
+    from dynamic_subgraphs.engine import _litellm_cost
+
+    assert _litellm_cost("any-model", 1_000_000, 1_000_000) == 3.0
+    # _compute_cost falls back to LiteLLM when no manual pricing is given.
+    usage = TokenUsage(
+        by_model={"any": {"input_tokens": 1_000_000, "output_tokens": 0}}
+    )
+    assert _compute_cost(usage, None) == 1.0
+
+
+def test_manual_pricing_overrides_litellm(monkeypatch) -> None:
+    import sys
+    import types
+
+    # LiteLLM would return a huge price; the manual entry must win.
+    fake = types.SimpleNamespace(
+        suppress_debug_info=False,
+        cost_per_token=lambda **k: (999.0, 999.0),
+    )
+    monkeypatch.setitem(sys.modules, "litellm", fake)
+    usage = TokenUsage(by_model={"m": {"input_tokens": 1_000_000, "output_tokens": 0}})
+    assert (
+        _compute_cost(usage, {"m": {"input_per_1m": 0.5, "output_per_1m": 1.0}}) == 0.5
+    )
 
 
 def test_compute_cost_matches_dated_snapshot_by_alias() -> None:

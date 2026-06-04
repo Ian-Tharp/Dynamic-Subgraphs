@@ -47,12 +47,15 @@ api = ["fastapi>=0.136.3", "uvicorn[standard]>=0.48.0"]
 openai = ["langchain-openai>=1.2.2"]
 anthropic = ["langchain-anthropic>=0.3.0"]
 ollama = ["langchain-ollama>=0.2.0"]
+# Automatic cost on RunResult via LiteLLM's maintained price map (no manual prices).
+cost = ["litellm>=1.0"]
 all = [
     "fastapi>=0.136.3",
     "uvicorn[standard]>=0.48.0",
     "langchain-openai>=1.2.2",
     "langchain-anthropic>=0.3.0",
     "langchain-ollama>=0.2.0",
+    "litellm>=1.0",
 ]
 
 [project.urls]
