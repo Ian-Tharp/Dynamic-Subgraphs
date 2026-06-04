@@ -180,6 +180,7 @@ def validate_graph_spec(
             "max_llm_calls": effective.max_llm_calls,
             "max_depth": effective.max_depth,
             "max_wall_seconds": effective.max_wall_seconds,
+            "max_fanout": effective.max_fanout,
         }
     )
     return spec.model_copy(update={"nodes": normalized_nodes, "budget": granted})
