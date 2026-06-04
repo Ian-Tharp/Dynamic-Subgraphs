@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.models import GraphSpec
+from app.policy import ExecutionPolicy
 from app.recording import Recorder, RunRecord
 from app.runtime import ExecutionResult, GraphExecutor
 from app.supervisor.graph import build_supervisor_graph
@@ -58,14 +59,17 @@ class Supervisor:
         planner: Planner,
         executor: GraphExecutor,
         recorder: Recorder,
+        policy: ExecutionPolicy | None = None,
     ) -> None:
         self._planner = planner
         self._executor = executor
         self._recorder = recorder
+        self._policy = policy or ExecutionPolicy()
         self._graph = build_supervisor_graph(
             planner=planner,
             executor=executor,
             recorder=recorder,
+            policy=self._policy,
         ).compile()
 
     def run(self, prompt: str, *, run_id: str) -> SupervisorResult:

@@ -23,6 +23,7 @@ emit invalid plans. See `docs/recipes.md`.
 
 from __future__ import annotations
 
+from app.policy import ExecutionPolicy
 from app.runtime import ModelRef
 from dynamic_subgraphs.engine import (
     DynamicSubgraphs,
@@ -67,6 +68,7 @@ __all__ = [
     "EvalReference",
     "EvalResult",
     "EvalTags",
+    "ExecutionPolicy",
     "Model",
     "ModelRef",
     "ModelSelection",

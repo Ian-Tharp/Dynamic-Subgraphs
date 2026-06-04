@@ -43,6 +43,7 @@ from langchain_core.callbacks import UsageMetadataCallbackHandler
 
 from app.assembly import RunConfig, build_supervisor
 from app.models import GraphSpec
+from app.policy import ExecutionPolicy
 from app.recording import FileRecorder, NullRecorder
 from app.runtime import (
     CollectingArtifactSink,
@@ -229,6 +230,9 @@ class RunResult:
         cost: total USD cost. Auto-computed from LiteLLM's price map when the
             `cost` extra is installed; or from `EngineConfig(pricing=...)`;
             else None. (Tokens are always exact and free — cost needs prices.)
+        effective_budget: the host-*granted* budget for this run — the planner's
+            request capped by the `ExecutionPolicy` (`min(host, request)` per
+            field). None if planning/validation failed. Equals `plan.budget`.
 
     Use `to_dict()` for a JSON-safe view (handy for logging or handing to
     another tool/agent).
@@ -243,6 +247,7 @@ class RunResult:
     errors: list[dict[str, Any]] = field(default_factory=list)
     usage: TokenUsage = field(default_factory=TokenUsage)
     cost: float | None = None
+    effective_budget: dict[str, Any] | None = None
 
     @property
     def ok(self) -> bool:
@@ -271,6 +276,7 @@ class RunResult:
                 "by_model": self.usage.by_model,
             },
             "cost": self.cost,
+            "effective_budget": self.effective_budget,
         }
 
     @classmethod
@@ -294,6 +300,13 @@ class RunResult:
                 if path.is_file():
                     artifacts[path.name] = path
 
+        # The validated spec's budget is the *granted* (host-resolved) budget —
+        # the validator stamped it. Surface it so a caller can see what the host
+        # actually allowed vs. what the planner requested (plan.budget == this).
+        effective_budget: dict[str, Any] | None = None
+        if result.validated_spec is not None:
+            effective_budget = result.validated_spec.budget.model_dump(mode="json")
+
         return cls(
             run_id=run_id,
             status=result.status,
@@ -304,6 +317,7 @@ class RunResult:
             errors=list(result.errors or []),
             usage=usage,
             cost=cost,
+            effective_budget=effective_budget,
         )
 
 
@@ -345,6 +359,12 @@ class EngineConfig:
     runs_dir: str | Path = "runs"
     providers: ProviderRegistry | None = None
     checkpointer: Any | None = None
+    # Host-owned execution governance. The planner may *request* a budget, but
+    # the effective limit per field is min(host ceiling, request). Defaults are
+    # permissive-but-bounded (they match the historical GraphBudget defaults),
+    # so leaving this unset preserves prior behavior for typical plans. Set a
+    # stricter `ExecutionPolicy(...)` to cap budgets the planner can never widen.
+    policy: ExecutionPolicy = field(default_factory=ExecutionPolicy)
     # Optional manual price override for cost, e.g.
     # {"gpt-5.4-nano": {"input_per_1m": 0.2, "output_per_1m": 1.25}}.
     # With the `cost` extra installed, cost is computed automatically (LiteLLM)
@@ -418,6 +438,7 @@ class DynamicSubgraphs:
         self._providers = config.providers or default_model_providers()
         self._checkpointer = config.checkpointer
         self._pricing = config.pricing
+        self._policy = config.policy
 
     @property
     def config(self) -> EngineConfig:
@@ -512,6 +533,7 @@ class DynamicSubgraphs:
             model_providers=self._providers,
             artifact_sink=artifact_sink,
             chat_callbacks=[usage_handler],
+            policy=self._policy,
         )
         result = supervisor.run(prompt, run_id=run_id)
 

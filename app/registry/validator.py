@@ -12,7 +12,7 @@ from app.models.graph_spec import (
     NodeSpec,
 )
 from app.models.node_kinds import NodeKind
-from app.policy import MAX_DEPTH_CEILING
+from app.policy import MAX_DEPTH_CEILING, ExecutionPolicy, resolve_effective_budget
 from app.registry.errors import RegistryValidationError, RegistryValidationIssue
 from app.registry.registry import Registry
 
@@ -31,12 +31,33 @@ _VALID_NODE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 _RESERVED_ID_MARKER = "__pm_"
 
 
-def validate_graph_spec(spec: GraphSpec, registry: Registry | None = None) -> GraphSpec:
+def validate_graph_spec(
+    spec: GraphSpec,
+    registry: Registry | None = None,
+    *,
+    policy: ExecutionPolicy | None = None,
+) -> GraphSpec:
     """
     Validate a GraphSpec against registry policy and graph topology (v1 §9).
-    Returns a copy with normalized node params on success.
+
+    Numeric budgets are enforced against the **host-owned** `ExecutionPolicy`,
+    not the planner's self-declared budget: the effective limit per field is
+    `min(host ceiling, planner request)`. The resolved budget is stamped onto
+    the returned spec so the executor's recursion rail, the nested-subgraph
+    clamp, recording, and the API all read the *granted* limits. With no policy
+    passed, the default `ExecutionPolicy()` applies (its ceilings match the
+    historical `GraphBudget` defaults).
+
+    Returns a copy with normalized node params and the granted budget.
     """
     reg = registry or Registry()
+    effective = resolve_effective_budget(
+        policy or ExecutionPolicy(),
+        spec.budget,
+        registry_tools=reg.tools,
+        registry_subagents=reg.subagents,
+        registry_kinds=reg.allowed_kinds(),
+    )
     issues: list[RegistryValidationIssue] = []
 
     if spec.schema_version != GRAPH_SPEC_SCHEMA_VERSION:
@@ -75,20 +96,28 @@ def validate_graph_spec(spec: GraphSpec, registry: Registry | None = None) -> Gr
     if issues:
         raise RegistryValidationError(issues)
 
-    if len(normalized_nodes) > spec.budget.max_nodes:
+    if len(normalized_nodes) > effective.max_nodes:
         issues.append(
             RegistryValidationIssue(
                 code="budget_exceeded",
-                message=f"Node count {len(normalized_nodes)} exceeds max_nodes {spec.budget.max_nodes}",
+                message=(
+                    f"Node count {len(normalized_nodes)} exceeds the effective "
+                    f"max_nodes {effective.max_nodes} "
+                    f"(host policy ∧ requested {spec.budget.max_nodes})"
+                ),
             )
         )
 
     llm_count = reg.count_llm_calls(normalized_nodes)
-    if llm_count > spec.budget.max_llm_calls:
+    if llm_count > effective.max_llm_calls:
         issues.append(
             RegistryValidationIssue(
                 code="budget_exceeded",
-                message=f"LLM call count {llm_count} exceeds max_llm_calls {spec.budget.max_llm_calls}",
+                message=(
+                    f"LLM call count {llm_count} exceeds the effective "
+                    f"max_llm_calls {effective.max_llm_calls} "
+                    f"(host policy ∧ requested {spec.budget.max_llm_calls})"
+                ),
             )
         )
 
@@ -112,7 +141,18 @@ def validate_graph_spec(spec: GraphSpec, registry: Registry | None = None) -> Gr
     if issues:
         raise RegistryValidationError(issues)
 
-    return spec.model_copy(update={"nodes": normalized_nodes})
+    # Stamp the granted budget so the executor's recursion rail, the nested
+    # clamp, recording, and the API all read the host-enforced limits — there is
+    # no separate copy of spec.budget for anything downstream to trust.
+    granted = spec.budget.model_copy(
+        update={
+            "max_nodes": effective.max_nodes,
+            "max_llm_calls": effective.max_llm_calls,
+            "max_depth": effective.max_depth,
+            "max_wall_seconds": effective.max_wall_seconds,
+        }
+    )
+    return spec.model_copy(update={"nodes": normalized_nodes, "budget": granted})
 
 
 def _validate_edges(

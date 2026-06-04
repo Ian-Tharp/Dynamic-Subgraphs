@@ -19,6 +19,7 @@ from __future__ import annotations
 from langgraph.graph import END, START, StateGraph
 
 from app.compiler import GraphCompilationError
+from app.policy import ExecutionPolicy
 from app.recording import Recorder
 from app.registry import RegistryValidationError, validate_graph_spec
 from app.runtime import GraphExecutor
@@ -35,13 +36,18 @@ def build_supervisor_graph(
     planner: Planner,
     executor: GraphExecutor,
     recorder: Recorder,
+    policy: ExecutionPolicy | None = None,
 ) -> StateGraph:
-    """Wire the static supervisor StateGraph with injected dependencies."""
+    """Wire the static supervisor StateGraph with injected dependencies.
+
+    `policy` is the host-owned `ExecutionPolicy` the validate step enforces
+    budgets against (defaults to a permissive-but-bounded `ExecutionPolicy()`).
+    """
 
     graph = StateGraph(SupervisorState)
     graph.add_node("receive", _make_receive_node())
     graph.add_node("plan", _make_plan_node(planner))
-    graph.add_node("validate", _make_validate_node())
+    graph.add_node("validate", _make_validate_node(policy))
     graph.add_node("execute", _make_execute_node(executor))
     graph.add_node("record", _make_record_node(recorder))
     graph.add_node("respond", _make_respond_node())
@@ -106,10 +112,10 @@ def _make_plan_node(planner: Planner):
     return plan
 
 
-def _make_validate_node():
+def _make_validate_node(policy: ExecutionPolicy | None = None):
     def validate(state: SupervisorState) -> SupervisorState:
         try:
-            validated = validate_graph_spec(state["spec"])
+            validated = validate_graph_spec(state["spec"], policy=policy)
         except RegistryValidationError as exc:
             return {
                 "status": _VALIDATION_FAILED,
