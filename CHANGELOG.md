@@ -21,6 +21,10 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
   defaults to in-memory execution and writes no files (removed wording that
   implied every run is persisted).
 - Pointed the PyPI `Documentation` URL at the docs on the active branch.
+- Added `docs/api-stability.md` — the project's opinionated API stability &
+  change policy (public-API definition, SemVer / 0.x rule, additive-by-default
+  discipline, deprecation policy, and the CI guards that enforce it). Linked
+  from the README and CONTRIBUTING.
 
 ### Changed
 - Removed `mock_document_extract` from the default tool allowlist (it echoed

@@ -333,6 +333,7 @@ result = engine.run(
 
 - [`examples/`](./examples/) — runnable, standalone SDK integration examples (one file per pattern).
 - [`docs/recipes.md`](./docs/recipes.md) — copy-pasteable SDK patterns (local models, hybrid, recording presets, debugging) + tested-model and latency tables.
+- [`docs/api-stability.md`](./docs/api-stability.md) — API stability & change policy: what counts as public, SemVer, deprecation, and how we keep changes non-breaking.
 - [`docs/evals/`](./docs/evals/) — eval reports (e.g. the gpt-5.4-nano vs claude-haiku-4-5 e2e comparison: latency / tokens / cost / quality, traced via LangSmith).
 - [`docs/api.md`](./docs/api.md) — the HTTP surface over the supervisor (endpoints, modes, auth, examples).
 - [`docs/dynamic-graphs-canonical-design-v1.md`](./docs/dynamic-graphs-canonical-design-v1.md) — canonical project design and source of truth.

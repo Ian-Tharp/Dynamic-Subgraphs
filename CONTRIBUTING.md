@@ -4,6 +4,11 @@ Thanks for your interest in contributing! This project is a governed
 dynamic-graph runtime / SDK. Contributions of all kinds are welcome — bug
 reports, docs, tests, and features.
 
+> **Before changing public API or behavior, read
+> [`docs/api-stability.md`](./docs/api-stability.md)** — the project's standard
+> for what counts as public, SemVer, deprecation, and keeping changes
+> non-breaking (additive, opt-in, defaulted). It's prescriptive on purpose.
+
 ## Dev setup
 
 We use [`uv`](https://docs.astral.sh/uv/). The dev environment installs all
