@@ -7,6 +7,17 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
 
 ## [Unreleased]
 
+### Documentation
+- README reframed around the actual value proposition — a *governed, auditable*
+  runtime for LLM-generated workflows (validated plans, allowlisted vocabulary,
+  budget-capped recursion, replayable runs), rather than leading with "the model
+  invents the topology".
+- Added the missing `branch` node kind to the README's vocabulary list (the
+  registry ships nine kinds; the README listed eight) and a dynamic-routing diagram
+  that shows it.
+- Added a "When (not) to reach for it" section — when a fixed graph or a plain
+  tool loop is the better tool, stated plainly.
+
 ### Changed
 - Removed `mock_document_extract` from the default tool allowlist (it echoed
   empty content, so a planner that picked it for a retrieval/compare task
@@ -20,6 +31,12 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
   `EvalTags`, `EvalContext`) and the `value_per_ktok`/`value_per_usd` axes.
   Nothing scores a run until an `EvalGate` is configured. Design:
   `docs/specs/2026-06-03-eval-value-layer-design.md`.
+- `DynamicSubgraphs.capabilities()` now lists `node_kinds` (the registry's full
+  node vocabulary), and `dynamic_subgraphs.types.NODE_KINDS` exposes it as a
+  runtime tuple — both sourced from the `NodeKind` enum so the agent-facing
+  surface can't drift from what the compiler accepts. Guard tests assert the
+  capabilities map and the README each enumerate every node kind (this drift
+  shipped once — the README listed eight of nine kinds).
 - `RunResult.usage` (exact `TokenUsage` — input/output/total + per-model
   breakdown, from the providers' own counts via LangChain's usage callback).
 - `RunResult.cost` — computed automatically with the `cost` extra (LiteLLM's

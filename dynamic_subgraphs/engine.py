@@ -53,6 +53,7 @@ from app.runtime import (
 from dynamic_subgraphs.recording import Artifact, Recording
 from dynamic_subgraphs.types import (
     MODEL_ROLES,
+    NODE_KINDS,
     PLANNERS,
     RUN_STATUSES,
     STRUCTURED_METHODS,
@@ -381,16 +382,18 @@ class DynamicSubgraphs:
     def capabilities(cls, providers: ProviderRegistry | None = None) -> dict[str, Any]:
         """Machine-readable map of every valid option, for agents/tools.
 
-        One call enumerates providers, planners, model roles, artifact ids,
-        recording presets, run statuses, structured-output methods, and the
-        `Model` convenience constructors — so a caller never has to guess an
-        option string. JSON-safe (all values are plain lists of strings).
+        One call enumerates providers, planners, model roles, node kinds,
+        artifact ids, recording presets, run statuses, structured-output
+        methods, and the `Model` convenience constructors — so a caller never
+        has to guess an option string. JSON-safe (all values are plain lists of
+        strings).
         """
         registry = providers or default_model_providers()
         return {
             "providers": list(registry.names()),
             "planners": list(PLANNERS),
             "model_roles": list(MODEL_ROLES),
+            "node_kinds": list(NODE_KINDS),
             "artifacts": [a.value for a in Artifact],
             "recording_presets": [
                 "none",

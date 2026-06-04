@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Literal, get_args
 
+from app.models import NodeKind
 from dynamic_subgraphs.recording import Artifact
 
 # Run outcome — mirrors app/supervisor/state.py (single-run statuses).
@@ -51,9 +52,15 @@ MODEL_ROLES: tuple[str, ...] = (
 # emit_artifact sink toggle).
 ARTIFACT_KINDS: tuple[str, ...] = tuple(a.value for a in Artifact)
 
+# The bounded vocabulary of node kinds a plan may use — sourced directly from
+# the registry's `NodeKind` enum so the SDK surface (and `capabilities()`) can
+# never drift from what the compiler actually accepts.
+NODE_KINDS: tuple[str, ...] = tuple(k.value for k in NodeKind)
+
 __all__ = [
     "ARTIFACT_KINDS",
     "MODEL_ROLES",
+    "NODE_KINDS",
     "PLANNERS",
     "RUN_STATUSES",
     "STRUCTURED_METHODS",
