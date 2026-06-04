@@ -17,6 +17,9 @@ class GraphBudget(BaseModel):
     max_depth: int = Field(default=2, ge=1)
     max_wall_seconds: int = Field(default=90, ge=1)
     max_llm_calls: int = Field(default=8, ge=0)
+    # Max items a single parallel_map node may fan out to. Enforced at dispatch
+    # against the host ExecutionPolicy (effective = min(host, request)).
+    max_fanout: int = Field(default=64, ge=1)
 
 
 class NodeSpec(BaseModel):

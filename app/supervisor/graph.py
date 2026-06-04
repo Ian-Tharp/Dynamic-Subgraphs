@@ -16,9 +16,12 @@ the supervisor reports `execution_failed`.
 
 from __future__ import annotations
 
+from typing import Any
+
 from langgraph.graph import END, START, StateGraph
 
 from app.compiler import GraphCompilationError
+from app.policy import ExecutionPolicy
 from app.recording import Recorder
 from app.registry import RegistryValidationError, validate_graph_spec
 from app.runtime import GraphExecutor
@@ -28,6 +31,52 @@ from app.supervisor.state import SupervisorState
 _PLAN_FAILED = "plan_failed"
 _VALIDATION_FAILED = "validation_failed"
 _COMPILE_FAILED = "compile_failed"
+# Transient: validation failed but a repair attempt remains. Always routes
+# straight back to `plan`, so it is never a final status.
+_PLAN_REPAIR_NEEDED = "plan_repair_needed"
+
+# Validation issues a re-plan can't fix (a code/schema bug, not a plan the
+# planner can correct) — never retry when *all* issues are of these kinds.
+_NON_REPAIRABLE = frozenset({"unsupported_schema"})
+
+
+def _issues_repairable(issues: list[dict[str, Any]]) -> bool:
+    """True if at least one issue is something a re-plan could plausibly fix."""
+    codes = {i.get("code") for i in issues}
+    return bool(codes) and not codes.issubset(_NON_REPAIRABLE)
+
+
+def _build_repair_prompt(
+    original_prompt: str,
+    issues: list[dict[str, Any]],
+    policy: ExecutionPolicy,
+    rejected_spec: Any | None,
+) -> str:
+    """Augment the prompt with the validator's findings + the host limits.
+
+    The planner keeps its single-string interface; repair is just a richer
+    prompt: the concrete issues to fix, the host ceilings to stay within, and
+    the rejected plan so the model can correct it directly.
+    """
+    lines = [
+        original_prompt,
+        "",
+        "Your previous GraphSpec was REJECTED by the validator. Produce a "
+        "corrected plan that fixes ALL of these issues:",
+    ]
+    for issue in issues:
+        where = f" (node: {issue['node_id']})" if issue.get("node_id") else ""
+        lines.append(f"- [{issue.get('code')}] {issue.get('message')}{where}")
+    lines += [
+        "",
+        "You MUST stay within these host limits (you cannot exceed them):",
+        f"- at most {policy.max_nodes} nodes",
+        f"- at most {policy.max_llm_calls} LLM calls",
+        f"- nesting depth at most {policy.max_depth}",
+    ]
+    if rejected_spec is not None:
+        lines += ["", "The rejected plan was:", rejected_spec.model_dump_json()]
+    return "\n".join(lines)
 
 
 def build_supervisor_graph(
@@ -35,13 +84,24 @@ def build_supervisor_graph(
     planner: Planner,
     executor: GraphExecutor,
     recorder: Recorder,
+    policy: ExecutionPolicy | None = None,
+    max_plan_attempts: int = 1,
 ) -> StateGraph:
-    """Wire the static supervisor StateGraph with injected dependencies."""
+    """Wire the static supervisor StateGraph with injected dependencies.
+
+    `policy` is the host-owned `ExecutionPolicy` the validate step enforces
+    budgets against (defaults to a permissive-but-bounded `ExecutionPolicy()`).
+
+    `max_plan_attempts` bounds the plan-repair loop: when a plan is rejected by
+    the validator for a *repairable* reason and attempts remain, the validator's
+    issues + the host limits are fed back into a re-plan (`validate -> plan`).
+    `1` (the default here) disables repair — block and report on first failure.
+    """
 
     graph = StateGraph(SupervisorState)
     graph.add_node("receive", _make_receive_node())
-    graph.add_node("plan", _make_plan_node(planner))
-    graph.add_node("validate", _make_validate_node())
+    graph.add_node("plan", _make_plan_node(planner, policy))
+    graph.add_node("validate", _make_validate_node(policy, max_plan_attempts))
     graph.add_node("execute", _make_execute_node(executor))
     graph.add_node("record", _make_record_node(recorder))
     graph.add_node("respond", _make_respond_node())
@@ -50,11 +110,9 @@ def build_supervisor_graph(
     graph.add_edge("receive", "plan")
     graph.add_conditional_edges("plan", _route_after_plan, ["validate", "respond"])
     graph.add_conditional_edges(
-        "validate", _route_after_validate, ["execute", "respond"]
+        "validate", _route_after_validate, ["execute", "plan", "respond"]
     )
-    graph.add_conditional_edges(
-        "execute", _route_after_execute, ["record", "respond"]
-    )
+    graph.add_conditional_edges("execute", _route_after_execute, ["record", "respond"])
     graph.add_edge("record", "respond")
     graph.add_edge("respond", END)
 
@@ -69,7 +127,12 @@ def _route_after_plan(state: SupervisorState) -> str:
 
 
 def _route_after_validate(state: SupervisorState) -> str:
-    return "respond" if state.get("status") == _VALIDATION_FAILED else "execute"
+    status = state.get("status")
+    if status == _PLAN_REPAIR_NEEDED:
+        return "plan"  # the validator decided a repair attempt remains
+    if status == _VALIDATION_FAILED:
+        return "respond"
+    return "execute"
 
 
 def _route_after_execute(state: SupervisorState) -> str:
@@ -88,13 +151,28 @@ def _make_receive_node():
     return receive
 
 
-def _make_plan_node(planner: Planner):
+def _make_plan_node(planner: Planner, policy: ExecutionPolicy | None = None):
+    effective_policy = policy or ExecutionPolicy()
+
     def plan(state: SupervisorState) -> SupervisorState:
+        attempt = state.get("plan_attempts", 0) + 1
+        # On a repair pass the validator stashed the issues; feed them (plus the
+        # host limits and the rejected plan) back to the planner.
+        issues = state.get("last_validation_issues")
+        prompt = state["prompt"]
+        if issues:
+            prompt = _build_repair_prompt(
+                state["prompt"],
+                issues,
+                effective_policy,
+                state.get("last_rejected_spec"),
+            )
         try:
-            spec = planner(state["prompt"])
-        except Exception as exc:  # noqa: BLE001 - planner failures must not crash supervisor
+            spec = planner(prompt)
+        except Exception as exc:
             return {
                 "status": _PLAN_FAILED,
+                "plan_attempts": attempt,
                 "errors": [
                     {
                         "stage": "plan",
@@ -103,16 +181,42 @@ def _make_plan_node(planner: Planner):
                     }
                 ],
             }
-        return {"spec": spec}
+        # Clear the transient repair context; status resets so validate re-runs.
+        return {
+            "spec": spec,
+            "plan_attempts": attempt,
+            "status": "pending",
+            "last_validation_issues": None,
+        }
 
     return plan
 
 
-def _make_validate_node():
+def _make_validate_node(
+    policy: ExecutionPolicy | None = None, max_plan_attempts: int = 1
+):
     def validate(state: SupervisorState) -> SupervisorState:
         try:
-            validated = validate_graph_spec(state["spec"])
+            validated = validate_graph_spec(state["spec"], policy=policy)
         except RegistryValidationError as exc:
+            issues = [
+                {
+                    "code": issue.code,
+                    "message": issue.message,
+                    "node_id": issue.node_id,
+                    "field": issue.field,
+                }
+                for issue in exc.issues
+            ]
+            attempts = state.get("plan_attempts", 1)
+            if attempts < max_plan_attempts and _issues_repairable(issues):
+                # A repair attempt remains: stash the issues for the re-plan and
+                # do NOT write to `errors` — this isn't a terminal failure.
+                return {
+                    "status": _PLAN_REPAIR_NEEDED,
+                    "last_validation_issues": issues,
+                    "last_rejected_spec": state.get("spec"),
+                }
             return {
                 "status": _VALIDATION_FAILED,
                 "errors": [
@@ -120,15 +224,7 @@ def _make_validate_node():
                         "stage": "validate",
                         "type": "RegistryValidationError",
                         "message": str(exc),
-                        "issues": [
-                            {
-                                "code": issue.code,
-                                "message": issue.message,
-                                "node_id": issue.node_id,
-                                "field": issue.field,
-                            }
-                            for issue in exc.issues
-                        ],
+                        "issues": issues,
                     }
                 ],
             }
@@ -176,7 +272,7 @@ def _make_record_node(recorder: Recorder):
                 result=state["result"],
                 prompt=state.get("prompt"),
             )
-        except Exception as exc:  # noqa: BLE001 - record errors must not crash supervisor
+        except Exception as exc:
             return {
                 "status": "record_failed",
                 "errors": [
@@ -209,9 +305,7 @@ def _make_respond_node():
                 str(p.get("event_type")) if isinstance(p, dict) else str(p)
                 for p in payloads
             ]
-            label = (
-                ", ".join(event_types) if event_types else "an unspecified event"
-            )
+            label = ", ".join(event_types) if event_types else "an unspecified event"
             response = (
                 f"Run paused waiting for {label}. "
                 f"Call supervisor.resume(run_id, event=...) to continue."

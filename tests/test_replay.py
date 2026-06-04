@@ -8,9 +8,7 @@ be reconstructed.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
-import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
 from app.models import GraphSpec, NodeKind, NodeSpec
@@ -18,7 +16,6 @@ from app.models.graph_spec import EdgeSpec
 from app.recording import FileRecorder
 from app.runtime import LangGraphExecutor
 from app.supervisor import StaticPlanner, Supervisor
-
 
 # ---------- runners ----------
 
@@ -98,7 +95,7 @@ def test_replay_uses_recorded_spec_verbatim_without_calling_planner(
         call_log.append(prompt)
         return minimal_spec
 
-    def asserting_planner(prompt: str) -> GraphSpec:  # noqa: ARG001
+    def asserting_planner(prompt: str) -> GraphSpec:
         raise AssertionError("planner must not be called during replay")
 
     # First run with a working planner so we have a recorded spec to replay.
@@ -140,7 +137,10 @@ def test_replay_executes_a_fresh_run_not_reusing_original_state(
 
     # If replay reused original state, both runs would have the same call#.
     assert original.result is not None and replay.result is not None
-    assert original.result.state["values"]["draft"] != replay.result.state["values"]["draft"]
+    assert (
+        original.result.state["values"]["draft"]
+        != replay.result.state["values"]["draft"]
+    )
     assert "call#1" in original.result.state["values"]["draft"]
     assert "call#2" in replay.result.state["values"]["draft"]
 

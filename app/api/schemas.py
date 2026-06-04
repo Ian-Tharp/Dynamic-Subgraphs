@@ -8,7 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 ExecutionMode = Literal["sync", "async", "auto"]
-PlannerChoice = Literal["mock", "openai"]
+PlannerChoice = Literal["mock", "llm", "openai"]
 ChainDeciderChoice = Literal["status", "llm"]
 
 
@@ -17,6 +17,7 @@ class RunRequest(BaseModel):
     run_id: str | None = None
     mode: ExecutionMode = "auto"
     planner: PlannerChoice | None = None
+    provider: str | None = None
     model: str | None = None
 
 
@@ -25,6 +26,7 @@ class ChainRequest(BaseModel):
     run_id: str | None = None
     mode: ExecutionMode = "auto"
     planner: PlannerChoice | None = None
+    provider: str | None = None
     model: str | None = None
     max_iterations: int = Field(default=3, ge=1, le=10)
     decider: ChainDeciderChoice = "status"

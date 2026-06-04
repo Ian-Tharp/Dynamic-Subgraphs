@@ -13,6 +13,7 @@ checks as any other graph. Only *composition* goes fractal.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
     from app.models import GraphSpec
+    from app.policy import ExecutionPolicy
     from app.recording import Recorder
     from app.registry import Registry
     from app.runtime.executor import GraphExecutor
@@ -71,6 +73,9 @@ class ChildLauncher:
         parent_run_id: str,
         inputs: dict[str, Any],
         max_llm_calls: int | None = None,
+        max_nodes: int | None = None,
+        max_depth: int | None = None,
+        wall_deadline: float | None = None,
         replay_of: str | None = None,
     ) -> ChildResult:  # pragma: no cover - structural
         ...
@@ -90,13 +95,19 @@ def build_spawn_subgraph_runner(
     the wrapper maps to the node's declared output, if any).
     """
 
-    def _runner(state: "Mapping[str, Any]", params: "Mapping[str, Any]") -> dict[str, Any]:
+    def _runner(state: Mapping[str, Any], params: Mapping[str, Any]) -> dict[str, Any]:
         metadata = state.get("metadata", {}) or {}
         depth = int(metadata.get("graph_depth", 0))
-        if depth + 1 > depth_ceiling:
+        # The effective ceiling is the tighter of the host policy's max_depth and
+        # the hard rail, so a host that sets max_depth=2 actually caps nesting at
+        # 2 (not the rail of 3).
+        effective_ceiling = min(
+            int(metadata.get("budget_max_depth", depth_ceiling)), depth_ceiling
+        )
+        if depth + 1 > effective_ceiling:
             raise SubgraphDepthExceeded(
                 f"spawn_subgraph at depth {depth} would exceed the nesting "
-                f"ceiling {depth_ceiling}"
+                f"ceiling {effective_ceiling}"
             )
 
         parent_run_id = str(metadata.get("run_id", "root"))
@@ -104,16 +115,25 @@ def build_spawn_subgraph_runner(
         sub_goal = str(params["sub_goal"])
         inputs_from = list(params.get("inputs_from", []) or [])
         parent_values = state.get("values", {}) or {}
-        inputs = {key: parent_values[key] for key in inputs_from if key in parent_values}
+        inputs = {
+            key: parent_values[key] for key in inputs_from if key in parent_values
+        }
 
-        # Clamp the child to the parent's remaining LLM budget so a nest can't
-        # outspend the root. `consumed` already reflects earlier siblings' rolled
-        # -up child spend, so successive spawns see a shrinking allowance.
-        budget_max = metadata.get("budget_max_llm_calls")
-        max_llm_calls: int | None = None
-        if budget_max is not None:
-            consumed = int((state.get("counters", {}) or {}).get("llm_calls_consumed", 0))
-            max_llm_calls = max(0, int(budget_max) - consumed)
+        # Compose the child's budget against the parent's REMAINING node and LLM
+        # allowance so a nest can't outspend the root. `consumed` reflects earlier
+        # *serial* siblings' rolled-up spend; concurrent sibling spawns scheduled
+        # in one superstep read the same pre-merge value — a known TOCTOU, bounded
+        # by the depth ceiling (reserve-and-refund is a follow-up).
+        counters = state.get("counters", {}) or {}
+
+        def _remaining(budget_key: str, consumed_key: str) -> int | None:
+            cap = metadata.get(budget_key)
+            if cap is None:
+                return None
+            return max(0, int(cap) - int(counters.get(consumed_key, 0)))
+
+        max_llm_calls = _remaining("budget_max_llm_calls", "llm_calls_consumed")
+        max_nodes = _remaining("budget_max_nodes", "nodes_executed")
 
         child_run_id = f"{parent_run_id}__sg_{name}"
         # If this run is itself a replay (metadata carries the ORIGINAL parent's
@@ -128,6 +148,9 @@ def build_spawn_subgraph_runner(
             parent_run_id=parent_run_id,
             inputs=inputs,
             max_llm_calls=max_llm_calls,
+            max_nodes=max_nodes,
+            max_depth=effective_ceiling,
+            wall_deadline=metadata.get("wall_deadline_monotonic"),
             replay_of=original_child_run_id,
         )
         if result.status != "ok":
@@ -147,10 +170,11 @@ def build_spawn_subgraph_runner(
 
 def make_child_launcher(
     *,
-    planner: "Callable[[str], GraphSpec]",
-    executor: "GraphExecutor",
-    registry: "Registry | None" = None,
-    recorder: "Recorder | None" = None,
+    planner: Callable[[str], GraphSpec],
+    executor: GraphExecutor,
+    registry: Registry | None = None,
+    recorder: Recorder | None = None,
+    policy: ExecutionPolicy | None = None,
 ) -> ChildLauncher:
     """Build a `ChildLauncher` from a planner + executor.
 
@@ -175,8 +199,20 @@ def make_child_launcher(
         parent_run_id: str,
         inputs: dict[str, Any],
         max_llm_calls: int | None = None,
+        max_nodes: int | None = None,
+        max_depth: int | None = None,
+        wall_deadline: float | None = None,
         replay_of: str | None = None,
     ) -> ChildResult:
+        # Fail closed before planning if the parent has no remaining node budget
+        # — a nest out of budget must not get a fresh allowance (or burn a
+        # planner call).
+        if max_nodes is not None and max_nodes < 1:
+            raise SubgraphChildFailed(
+                f"child subgraph {run_id!r} has no remaining node budget "
+                f"(the nest is out of budget)"
+            )
+
         # Replay determinism: when replaying, reuse the originally recorded child
         # spec (`replay_of` is its run id) instead of re-planning, so the nested
         # shape reproduces. Fall back to planning if it can't be loaded.
@@ -184,19 +220,30 @@ def make_child_launcher(
         if replay_of is not None and recorder is not None:
             try:
                 spec = recorder.load_validated_spec(replay_of)
-            except Exception:  # noqa: BLE001 - missing/unreadable spec -> re-plan
+            except Exception:
                 spec = None
         if spec is None:
             spec = planner(sub_goal)
+        # Cap the child's budget to the parent's REMAINING allowance (nodes, LLM
+        # calls, depth) before validation; an oversized child then fails closed
+        # against the host policy rather than overspending the nest.
+        budget_update: dict[str, Any] = {}
         if max_llm_calls is not None:
-            # Cap the child's LLM budget to the parent's remaining allowance
-            # before validation; an oversized child then fails closed rather
-            # than overspending the nest.
-            capped = spec.budget.model_copy(
-                update={"max_llm_calls": min(spec.budget.max_llm_calls, max_llm_calls)}
+            budget_update["max_llm_calls"] = min(
+                spec.budget.max_llm_calls, max_llm_calls
             )
-            spec = spec.model_copy(update={"budget": capped})
-        validated = validate_graph_spec(spec, registry)
+        if max_nodes is not None:
+            budget_update["max_nodes"] = min(spec.budget.max_nodes, max_nodes)
+        if max_depth is not None:
+            budget_update["max_depth"] = min(spec.budget.max_depth, max_depth)
+        if budget_update:
+            spec = spec.model_copy(
+                update={"budget": spec.budget.model_copy(update=budget_update)}
+            )
+        # The host policy applies to the child too: a nested graph can never
+        # grant itself a larger budget than the host (the parent's remaining LLM
+        # allowance is already folded into spec.budget above).
+        validated = validate_graph_spec(spec, registry, policy=policy)
         if any(node.kind == NodeKind.WAIT_FOR_EVENT for node in validated.nodes):
             raise SubgraphContainsWaitForEvent(
                 f"child subgraph {run_id!r} contains a wait_for_event node; "
@@ -208,6 +255,10 @@ def make_child_launcher(
             "graph_depth": graph_depth,
             "parent_run_id": parent_run_id,
         }
+        if wall_deadline is not None:
+            # One deadline spans the whole nest: the child reuses the parent's
+            # absolute deadline rather than minting a fresh max_wall_seconds.
+            child_metadata["wall_deadline_monotonic"] = wall_deadline
         if replay_of is not None:
             # Propagate replay so a grandchild also pins to its recorded spec.
             child_metadata["replay_of"] = replay_of
@@ -218,12 +269,10 @@ def make_child_launcher(
             initial_metadata=child_metadata,
         )
         if recorder is not None:
-            try:
+            with contextlib.suppress(Exception):
                 recorder.record(
                     spec=validated, result=result, prompt=sub_goal, overwrite=True
                 )
-            except Exception:  # noqa: BLE001 - recording must not break the child run
-                pass
         state = result.state or {}
         return ChildResult(
             values=dict(state.get("values", {}) or {}),

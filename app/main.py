@@ -177,7 +177,8 @@ def main() -> None:
     runs_dir = Path(__file__).resolve().parents[1] / "runs"
 
     config = RunConfig(
-        planner="openai" if args.llm else "mock",
+        planner="llm" if args.llm else "mock",
+        provider="openai",
         model=args.model,
         strict_runners=args.llm,
     )
@@ -185,7 +186,9 @@ def main() -> None:
     supervisor = build_supervisor(config, recorder=recorder)
 
     planner_label = f"LLMPlanner({args.model})" if args.llm else "StaticPlanner"
-    runner_label = f"OpenAILlmRunner({args.model})" if args.llm else "mock_llm_runner"
+    runner_label = (
+        f"ChatLlmRunner(openai:{args.model})" if args.llm else "mock_llm_runner"
+    )
     print(f"[demo] planner = {planner_label}")
     print(f"[demo] runner  = {runner_label}")
     print(f"[demo] runs    = {runs_dir}")

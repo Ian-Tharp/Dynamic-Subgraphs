@@ -113,7 +113,7 @@ def build_graph(
     # node is added; do this in a second pass.
     for node in branch_nodes:
         router = make_branch_router(node)
-        allowed_targets = list(node.params["branches"]) + [END]
+        allowed_targets = [*list(node.params["branches"]), END]
         graph.add_conditional_edges(node.id, router, allowed_targets)
 
     return graph

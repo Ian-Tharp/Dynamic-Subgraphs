@@ -13,6 +13,8 @@ from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 
+from app.runtime.model_providers import ModelRef, OpenAIModelProvider
+
 
 def build_openai_chat(
     model: str,
@@ -27,9 +29,11 @@ def build_openai_chat(
     don't pay the dependency cost.
     """
 
-    from langchain_openai import ChatOpenAI
-
-    kwargs: dict[str, Any] = {"model": model, **extra_kwargs}
-    if temperature is not None:
-        kwargs["temperature"] = temperature
-    return ChatOpenAI(**kwargs)
+    return OpenAIModelProvider().build_chat(
+        ModelRef(
+            provider="openai",
+            model=model,
+            temperature=temperature,
+            extra_kwargs=extra_kwargs,
+        )
+    )

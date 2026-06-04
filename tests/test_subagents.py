@@ -14,13 +14,11 @@ from app.registry import Registry, validate_graph_spec
 from app.runtime import (
     DEFAULT_SUBAGENT_SYSTEM_PROMPTS,
     LangGraphExecutor,
-    Subagent,
     make_llm_subagent,
     make_spawn_subagent_runner,
     run_spawn_subagent,
 )
 from app.runtime.state import make_initial_state
-
 
 # ---------- fake chat model ----------
 
@@ -46,9 +44,7 @@ class FakeChatModel:
 def test_llm_subagent_sends_system_and_human_messages() -> None:
     model = FakeChatModel([AIMessage(content="ok")])
 
-    subagent = make_llm_subagent(
-        system_prompt="You are a critic.", chat_model=model
-    )
+    subagent = make_llm_subagent(system_prompt="You are a critic.", chat_model=model)
     subagent("review the draft", context={})
 
     sent = model.calls[0]
@@ -61,9 +57,7 @@ def test_llm_subagent_sends_system_and_human_messages() -> None:
 def test_llm_subagent_renders_context_into_human_message() -> None:
     model = FakeChatModel([AIMessage(content="ok")])
 
-    subagent = make_llm_subagent(
-        system_prompt="role", chat_model=model
-    )
+    subagent = make_llm_subagent(system_prompt="role", chat_model=model)
     subagent(
         "analyze",
         context={"draft": "the candidate text", "facts": ["a", "b"]},
@@ -162,9 +156,7 @@ def test_default_spawn_subagent_runner_produces_predictable_echo() -> None:
         {"agent_name": "critic", "task": "review the draft"},
     )
 
-    assert out == {
-        "result": "<subagent:critic>review the draft</subagent>"
-    }
+    assert out == {"result": "<subagent:critic>review the draft</subagent>"}
 
 
 # ---------- DEFAULT_SUBAGENT_SYSTEM_PROMPTS ----------

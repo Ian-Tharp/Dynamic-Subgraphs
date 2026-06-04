@@ -12,7 +12,6 @@ from app.recording import FileRecorder, Recorder, render_mermaid
 from app.registry import validate_graph_spec
 from app.runtime import ExecutionResult, LangGraphExecutor
 
-
 # ---------- fixtures local to recording ----------
 
 
@@ -49,9 +48,7 @@ def test_file_recorder_satisfies_recorder_protocol() -> None:
 # ---------- artifacts on disk ----------
 
 
-def test_recorder_creates_all_expected_files(
-    tmp_path: Path, successful_result
-) -> None:
+def test_recorder_creates_all_expected_files(tmp_path: Path, successful_result) -> None:
     spec, result = successful_result
     recorder = FileRecorder(root_dir=tmp_path)
 
@@ -79,6 +76,59 @@ def test_record_returns_paths_for_each_artifact(
     }
     for path in record.artifacts.values():
         assert path.is_file()
+
+
+# ---------- selective recording ----------
+
+
+def test_recorder_selection_writes_only_selected(
+    tmp_path: Path, successful_result
+) -> None:
+    spec, result = successful_result
+    recorder = FileRecorder(
+        root_dir=tmp_path, selection=frozenset({"graph.mmd", "trace.jsonl"})
+    )
+
+    record = recorder.record(spec=spec, result=result)
+
+    assert (record.directory / "graph.mmd").exists()
+    assert (record.directory / "trace.jsonl").exists()
+    # Unselected artifacts are not written.
+    assert not (record.directory / "spec.json").exists()
+    assert not (record.directory / "output.json").exists()
+    assert not (record.directory / "summary.md").exists()
+    # RunRecord.artifacts reflects only what was written.
+    assert set(record.artifacts.keys()) == {"mermaid", "trace"}
+
+
+def test_recorder_selection_skips_unselected_renderer(
+    tmp_path: Path, successful_result, monkeypatch
+) -> None:
+    # Excluding the mermaid artifact must not even call the renderer (perf win).
+    import app.recording.recorder as rec_mod
+
+    def _boom(_spec):
+        raise AssertionError("render_mermaid should not run when unselected")
+
+    monkeypatch.setattr(rec_mod, "render_mermaid", _boom)
+
+    spec, result = successful_result
+    recorder = FileRecorder(root_dir=tmp_path, selection=frozenset({"trace.jsonl"}))
+
+    record = recorder.record(spec=spec, result=result)  # must not raise
+    assert set(record.artifacts.keys()) == {"trace"}
+
+
+def test_recorder_excluding_spec_breaks_resume_loudly(
+    tmp_path: Path, successful_result
+) -> None:
+    spec, result = successful_result
+    recorder = FileRecorder(root_dir=tmp_path, selection=frozenset({"graph.mmd"}))
+    recorder.record(spec=spec, result=result)
+
+    # Allowed to skip spec.json, but resume/replay then fail with guidance.
+    with pytest.raises(FileNotFoundError, match="resume/replay need spec.json"):
+        recorder.load_validated_spec("rec-ok")
 
 
 # ---------- file contents ----------

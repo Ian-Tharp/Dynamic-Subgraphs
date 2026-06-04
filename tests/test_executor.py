@@ -51,9 +51,7 @@ def test_executor_seeds_initial_metadata_alongside_run_id(
     compiled = _LangGraphCompiledGraph(spec=validated, graph=recorder)
     executor = LangGraphExecutor()
 
-    result = executor.execute(
-        compiled, run_id="r", initial_metadata={"graph_depth": 2}
-    )
+    result = executor.execute(compiled, run_id="r", initial_metadata={"graph_depth": 2})
 
     assert recorder.state is not None
     assert recorder.state["metadata"]["run_id"] == "r"
@@ -277,6 +275,6 @@ def test_every_registry_kind_has_an_executable_path() -> None:
     executable = set(default_runners().keys()) | set(COMPILER_HANDLED_KINDS)
     missing = set(NodeKind) - executable
 
-    assert (
-        not missing
-    ), f"these NodeKinds have no executable path: {sorted(k.value for k in missing)}"
+    assert not missing, (
+        f"these NodeKinds have no executable path: {sorted(k.value for k in missing)}"
+    )

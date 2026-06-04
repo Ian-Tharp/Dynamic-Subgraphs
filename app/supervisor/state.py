@@ -32,6 +32,9 @@ class SupervisorState(TypedDict, total=False):
         - "record_failed"        result exists but couldn't be persisted
         - "resume_failed"        executor or recorder errored during resume
         - "replay_failed"        executor or recorder errored during replay
+
+    Transient (never a final status — always routes straight back to `plan`):
+        - "plan_repair_needed"   validation failed but a repair attempt remains
     """
 
     prompt: str
@@ -43,3 +46,9 @@ class SupervisorState(TypedDict, total=False):
     response: str
     status: str
     errors: Annotated[list[dict[str, Any]], operator.add]
+    # Plan-repair loop: how many times `plan` has run, and the (transient)
+    # context a repair re-plan reads. Kept out of `errors` so a run that is
+    # repaired and then succeeds doesn't carry a non-terminal failure.
+    plan_attempts: int
+    last_validation_issues: list[dict[str, Any]] | None
+    last_rejected_spec: GraphSpec | None

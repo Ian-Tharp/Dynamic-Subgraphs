@@ -181,7 +181,12 @@ def test_tavily_provider_respects_limit_when_api_returns_more(monkeypatch) -> No
             {
                 "answer": None,
                 "results": [
-                    {"title": f"r{i}", "url": f"https://x/{i}", "content": "x", "score": 0.5}
+                    {
+                        "title": f"r{i}",
+                        "url": f"https://x/{i}",
+                        "content": "x",
+                        "score": 0.5,
+                    }
                     for i in range(10)
                 ],
             }

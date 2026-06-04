@@ -13,6 +13,7 @@
 
 - [`iterative-supervisor.md`](./iterative-supervisor.md) - bounded adaptive loop and strict runner mode.
 - [api.md](./api.md) — HTTP surface over the supervisor.
+- [`sdk-next-steps.md`](./sdk-next-steps.md) - SDK packaging and CORE integration follow-up plan.
 
 ## How to read this repo
 

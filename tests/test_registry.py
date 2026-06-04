@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from app.models import NodeKind, NodeSpec
+from app.models import NodeKind
 from app.registry import (
     FORBIDDEN_KINDS,
     Registry,
     RegistryValidationError,
     default_registry,
 )
-
 
 # ---------- kind admission ----------
 
@@ -33,7 +32,9 @@ def test_unknown_string_kind_is_rejected() -> None:
 # ---------- param validation: happy path ----------
 
 
-def test_validate_node_returns_node_with_normalized_params(registry: Registry, make_node) -> None:
+def test_validate_node_returns_node_with_normalized_params(
+    registry: Registry, make_node
+) -> None:
     node = make_node(
         "n1",
         NodeKind.TOOL_CALL,
@@ -86,9 +87,7 @@ def test_spawn_subagent_with_unknown_name_is_rejected(
     assert "subagent_not_allowlisted" in codes
 
 
-def test_llm_call_requires_non_empty_instruction(
-    registry: Registry, make_node
-) -> None:
+def test_llm_call_requires_non_empty_instruction(registry: Registry, make_node) -> None:
     node = make_node("n1", NodeKind.LLM_CALL, params={"instruction": ""})
 
     with pytest.raises(RegistryValidationError) as exc:
@@ -202,9 +201,7 @@ def test_reduce_with_concat_strategy_does_not_require_instruction(
     assert normalized.params["strategy"] == "concat"
 
 
-def test_branch_requires_at_least_two_branches(
-    registry: Registry, make_node
-) -> None:
+def test_branch_requires_at_least_two_branches(registry: Registry, make_node) -> None:
     node = make_node(
         "b",
         NodeKind.BRANCH,
@@ -219,9 +216,7 @@ def test_branch_requires_at_least_two_branches(
 
 
 def test_wait_for_event_accepts_no_timeout(registry: Registry, make_node) -> None:
-    node = make_node(
-        "w", NodeKind.WAIT_FOR_EVENT, params={"event_type": "callback"}
-    )
+    node = make_node("w", NodeKind.WAIT_FOR_EVENT, params={"event_type": "callback"})
 
     normalized = registry.validate_node_params(node)
 
@@ -280,14 +275,10 @@ def test_custom_registry_rejects_default_tools_not_in_its_allowlist(make_node) -
 # ---------- count_llm_calls ----------
 
 
-def test_count_llm_calls_counts_direct_llm_node(
-    registry: Registry, make_node
-) -> None:
+def test_count_llm_calls_counts_direct_llm_node(registry: Registry, make_node) -> None:
     nodes = [
         make_node("a", NodeKind.LLM_CALL, params={"instruction": "x"}),
-        make_node(
-            "b", NodeKind.TOOL_CALL, params={"tool_name": "web_search"}
-        ),
+        make_node("b", NodeKind.TOOL_CALL, params={"tool_name": "web_search"}),
     ]
 
     count = registry.count_llm_calls(nodes)

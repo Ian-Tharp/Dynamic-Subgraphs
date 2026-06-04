@@ -36,5 +36,5 @@ def render_value_for_prompt(value: Any) -> str:
         return value
     try:
         return json.dumps(value, default=str)
-    except Exception:  # noqa: BLE001 - render shouldn't break the runner
+    except Exception:
         return repr(value)

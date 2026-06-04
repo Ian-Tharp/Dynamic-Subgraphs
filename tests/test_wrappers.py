@@ -16,7 +16,6 @@ from app.models import NodeKind, NodeSpec, TraceEvent, TraceEventKind
 from app.runtime.state import make_initial_state
 from app.runtime.wrappers import make_node_wrapper, map_outputs
 
-
 # ---------- success path ----------
 
 

@@ -18,12 +18,34 @@ from app.api.settings import ApiSettings
 
 
 def test_save_then_load_roundtrip(tmp_path: Path) -> None:
-    save_run_config(tmp_path, planner="openai", model="gpt-5.4-nano")
-    assert load_run_config(tmp_path) == {"planner": "openai", "model": "gpt-5.4-nano"}
+    save_run_config(
+        tmp_path,
+        planner="llm",
+        provider="openai",
+        model="gpt-5.4-nano",
+    )
+    assert load_run_config(tmp_path) == {
+        "planner": "llm",
+        "provider": "openai",
+        "model": "gpt-5.4-nano",
+    }
 
 
 def test_load_missing_returns_none(tmp_path: Path) -> None:
     assert load_run_config(tmp_path) is None
+
+
+def test_load_old_config_defaults_provider_to_openai(tmp_path: Path) -> None:
+    (tmp_path / "api_config.json").write_text(
+        json.dumps({"planner": "openai", "model": "gpt-5.4-nano"}),
+        encoding="utf-8",
+    )
+
+    assert load_run_config(tmp_path) == {
+        "planner": "openai",
+        "provider": "openai",
+        "model": "gpt-5.4-nano",
+    }
 
 
 def _client(tmp_path: Path) -> TestClient:
@@ -35,7 +57,11 @@ def test_create_run_persists_resolved_config(tmp_path: Path) -> None:
     client.post("/runs", json={"prompt": "x", "run_id": "cfg-1", "mode": "sync"})
 
     config = load_run_config(tmp_path / "cfg-1")
-    assert config == {"planner": "mock", "model": "gpt-5.4-nano"}
+    assert config == {
+        "planner": "mock",
+        "provider": "openai",
+        "model": "gpt-5.4-nano",
+    }
 
 
 def test_resume_reads_persisted_config_not_server_default(tmp_path: Path) -> None:

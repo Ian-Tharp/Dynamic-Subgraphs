@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 
 from app.models import DynamicRunState
 
@@ -86,7 +86,7 @@ class FileArtifactSink:
     `_unscoped` subdirectory so the sink stays usable in ad-hoc contexts.
     """
 
-    _EXTENSIONS: dict[str, str] = {
+    _EXTENSIONS: ClassVar[dict[str, str]] = {
         "file": ".txt",
         "report": ".md",
         "message": ".txt",

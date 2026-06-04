@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 
 from fastapi import Request
@@ -13,11 +12,16 @@ from app.api.jobs import JobStore
 from app.api.settings import ApiSettings
 from app.assembly import RunConfig, build_supervisor
 from app.recording import FileRecorder
+from app.runtime import (
+    MissingModelProviderCredential,
+    ProviderRegistry,
+    default_model_providers,
+)
 from app.supervisor import (
     IterationDecider,
     StatusIterationDecider,
     Supervisor,
-    build_openai_iteration_decider,
+    build_provider_iteration_decider,
 )
 
 
@@ -27,9 +31,10 @@ class AppContext:
     recorder: FileRecorder
     jobs: JobStore
     checkpointer: object
+    model_providers: ProviderRegistry
 
     @classmethod
-    def build(cls, settings: ApiSettings) -> "AppContext":
+    def build(cls, settings: ApiSettings) -> AppContext:
         from langgraph.checkpoint.memory import MemorySaver
 
         return cls(
@@ -37,11 +42,15 @@ class AppContext:
             recorder=FileRecorder(root_dir=settings.runs_dir, overwrite=True),
             jobs=JobStore(max_workers=4),
             checkpointer=MemorySaver(),
+            model_providers=default_model_providers(),
         )
 
     def supervisor_for(self, config: RunConfig) -> Supervisor:
         return build_supervisor(
-            config, recorder=self.recorder, checkpointer=self.checkpointer
+            config,
+            recorder=self.recorder,
+            checkpointer=self.checkpointer,
+            model_providers=self.model_providers,
         )
 
 
@@ -53,25 +62,36 @@ def resolve_run_config(
     ctx: AppContext,
     *,
     planner: str | None,
+    provider: str | None = None,
     model: str | None,
 ) -> RunConfig:
     chosen_planner = planner or ctx.settings.planner
+    chosen_provider = (provider or ctx.settings.provider).strip().lower()
+    if chosen_planner == "openai":
+        chosen_planner = "llm"
+        chosen_provider = "openai"
     chosen_model = model or ctx.settings.model
 
-    if not ctx.settings.is_model_allowed(chosen_model):
+    if not ctx.settings.is_model_allowed(chosen_model, provider=chosen_provider):
         raise BadRequest(
-            f"Model {chosen_model!r} is not in the allowlist "
+            f"Model {chosen_provider}:{chosen_model} is not in the allowlist "
             f"{list(ctx.settings.model_allowlist)}"
         )
-    if chosen_planner == "openai" and not os.environ.get("OPENAI_API_KEY"):
-        raise ServiceUnavailable(
-            "planner=openai requested but OPENAI_API_KEY is not set"
-        )
-    return RunConfig(
+    config = RunConfig(
         planner=chosen_planner,  # type: ignore[arg-type]
+        provider=chosen_provider,
         model=chosen_model,
-        strict_runners=chosen_planner == "openai",
+        strict_runners=chosen_planner == "llm",
     )
+    if config.planner == "llm":
+        try:
+            for provider_name in config.providers_in_use():
+                ctx.model_providers.require_credentials(provider_name)
+        except KeyError as exc:
+            raise BadRequest(str(exc)) from exc
+        except MissingModelProviderCredential as exc:
+            raise ServiceUnavailable(str(exc)) from exc
+    return config
 
 
 def resolve_chain_decider(
@@ -93,17 +113,21 @@ def resolve_chain_decider(
         return StatusIterationDecider()
 
     if decider == "llm":
-        if not os.environ.get("OPENAI_API_KEY"):
-            raise ServiceUnavailable(
-                "decider=llm requested but OPENAI_API_KEY is not set"
-            )
-        if not ctx.settings.is_model_allowed(config.model):
+        if not ctx.settings.is_model_allowed(config.model, provider=config.provider):
             raise BadRequest(
-                f"Model {config.model!r} is not in the allowlist "
+                f"Model {config.provider}:{config.model} is not in the allowlist "
                 f"{list(ctx.settings.model_allowlist)}"
             )
-        return build_openai_iteration_decider(
-            model=config.model,
+        try:
+            ctx.model_providers.require_credentials(config.provider)
+            model_provider = ctx.model_providers.get(config.provider)
+        except KeyError as exc:
+            raise BadRequest(str(exc)) from exc
+        except MissingModelProviderCredential as exc:
+            raise ServiceUnavailable(str(exc)) from exc
+        return build_provider_iteration_decider(
+            model_provider,
+            config.model_ref,
             success_criteria=success_criteria,
             judge_failed_runs=judge_failed_runs,
         )

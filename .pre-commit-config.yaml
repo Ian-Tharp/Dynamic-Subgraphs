@@ -1,0 +1,40 @@
+# Run: uv run pre-commit install
+# Local hooks call the project's own ruff/mypy (via uv) so versions never drift
+# from pyproject. Standard hygiene hooks come from pre-commit-hooks.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types: [python]
+      - id: mypy
+        name: mypy (public package strict + governance core)
+        entry: uv run mypy dynamic_subgraphs app/policy.py
+        language: system
+        pass_filenames: false
+        files: ^(dynamic_subgraphs/|app/policy\.py)
+      - id: pytest
+        name: pytest (offline suite — same as CI)
+        # Runs the full offline suite (integration tests auto-skip via the
+        # marker), so a commit can't pass the hook while CI's test step fails.
+        # Move to `stages: [pre-push]` if per-commit latency becomes annoying.
+        entry: uv run pytest -m "not integration" -q
+        language: system
+        pass_filenames: false
+        always_run: true

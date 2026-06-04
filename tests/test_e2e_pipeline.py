@@ -101,9 +101,7 @@ def test_full_pipeline_succeeds_and_reports_ok(research_spec: GraphSpec) -> None
     validated = validate_graph_spec(research_spec)
     executor = LangGraphExecutor(runners={NodeKind.LLM_CALL: _mock_llm})
 
-    result = executor.execute(
-        executor.compile(validated), run_id="e2e-run-001"
-    )
+    result = executor.execute(executor.compile(validated), run_id="e2e-run-001")
 
     assert result.ok is True
     assert result.error is None
@@ -146,9 +144,7 @@ def test_trace_has_start_and_finish_per_successful_node(
     for nid in node_ids:
         node_events = [e for e in result.trace.events if e.node_id == nid]
         kinds = [e.kind.value for e in node_events]
-        assert kinds == ["node_start", "node_finish"], (
-            f"node {nid} produced {kinds}"
-        )
+        assert kinds == ["node_start", "node_finish"], f"node {nid} produced {kinds}"
 
 
 def test_trace_events_respect_topological_ordering(

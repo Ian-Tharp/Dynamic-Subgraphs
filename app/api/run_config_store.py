@@ -1,4 +1,4 @@
-"""Persist the planner/model a run was created with, so resume/replay reuse it.
+"""Persist the planner/provider/model a run used, so resume/replay reuse it.
 
 Without this, resume/replay fall back to the server's default planner — a run
 created with planner=openai would be *finished* by the mock model. The config
@@ -14,17 +14,26 @@ from pathlib import Path
 _CONFIG_FILENAME = "api_config.json"
 
 
-def save_run_config(run_dir: Path, *, planner: str, model: str) -> None:
+def save_run_config(
+    run_dir: Path,
+    *,
+    planner: str,
+    model: str,
+    provider: str = "openai",
+) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     path = run_dir / _CONFIG_FILENAME
     path.write_text(
-        json.dumps({"planner": planner, "model": model}, indent=2),
+        json.dumps(
+            {"planner": planner, "provider": provider, "model": model},
+            indent=2,
+        ),
         encoding="utf-8",
     )
 
 
 def load_run_config(run_dir: Path) -> dict[str, str] | None:
-    """Return {"planner", "model"} for the run, or None if absent/unreadable."""
+    """Return the run config, or None if absent/unreadable."""
     path = run_dir / _CONFIG_FILENAME
     if not path.exists():
         return None
@@ -33,7 +42,10 @@ def load_run_config(run_dir: Path) -> dict[str, str] | None:
     except (json.JSONDecodeError, OSError):
         return None
     planner = data.get("planner")
+    provider = data.get("provider")
     model = data.get("model")
     if not planner or not model:
         return None
-    return {"planner": planner, "model": model}
+    if not provider:
+        provider = "openai"
+    return {"planner": planner, "provider": provider, "model": model}

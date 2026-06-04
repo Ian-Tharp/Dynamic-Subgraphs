@@ -17,6 +17,7 @@ def test_resolve_defaults_to_settings() -> None:
     ctx = _ctx()
     config = resolve_run_config(ctx, planner=None, model=None)
     assert config.planner == "mock"
+    assert config.provider == "openai"
     assert config.model == "gpt-5.4-nano"
     assert config.strict_runners is False
 
@@ -38,7 +39,8 @@ def test_resolve_openai_with_key_ok(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     ctx = _ctx()
     config = resolve_run_config(ctx, planner="openai", model=None)
-    assert config.planner == "openai"
+    assert config.planner == "llm"
+    assert config.provider == "openai"
     assert config.strict_runners is True
 
 
@@ -79,7 +81,9 @@ def test_resolve_chain_decider_llm_builds_structured_judge(monkeypatch) -> None:
     config = resolve_run_config(ctx, planner="mock", model=None)
     captured = {}
 
-    def fake_builder(**kwargs):
+    def fake_builder(model_provider, model_ref, **kwargs):
+        assert model_provider.name == "openai"
+        assert model_ref.qualified_name == "openai:gpt-5.4-nano"
         captured.update(kwargs)
 
         def fake_decider(context: IterationContext) -> IterationDecision:
@@ -92,7 +96,7 @@ def test_resolve_chain_decider_llm_builds_structured_judge(monkeypatch) -> None:
 
         return fake_decider
 
-    monkeypatch.setattr("app.api.deps.build_openai_iteration_decider", fake_builder)
+    monkeypatch.setattr("app.api.deps.build_provider_iteration_decider", fake_builder)
 
     decider = resolve_chain_decider(
         ctx,
@@ -104,7 +108,6 @@ def test_resolve_chain_decider_llm_builds_structured_judge(monkeypatch) -> None:
 
     assert callable(decider)
     assert captured == {
-        "model": "gpt-5.4-nano",
         "success_criteria": "must mention CORE orchestration",
         "judge_failed_runs": True,
     }

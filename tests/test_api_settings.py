@@ -7,6 +7,7 @@ from app.api.settings import ApiSettings
 def test_defaults_are_mock_and_free() -> None:
     settings = ApiSettings.from_env({})
     assert settings.planner == "mock"
+    assert settings.provider == "openai"
     assert settings.model == "gpt-5.4-nano"
     assert "gpt-5.4-nano" in settings.model_allowlist
     assert settings.api_key is None
@@ -25,7 +26,8 @@ def test_env_overrides_are_parsed() -> None:
         "DS_MAX_SYNC_SECONDS": "30",
     }
     settings = ApiSettings.from_env(env)
-    assert settings.planner == "openai"
+    assert settings.planner == "llm"
+    assert settings.provider == "openai"
     assert settings.model_allowlist == ("gpt-5.4-nano", "gpt-5.4-mini")
     assert settings.runs_dir == "/tmp/runs"
     assert settings.api_key == "secret"
@@ -37,3 +39,9 @@ def test_model_allowed_check() -> None:
     settings = ApiSettings.from_env({"DS_MODEL_ALLOWLIST": "a,b"})
     assert settings.is_model_allowed("a") is True
     assert settings.is_model_allowed("zzz") is False
+
+
+def test_model_allowed_accepts_provider_qualified_entries() -> None:
+    settings = ApiSettings.from_env({"DS_MODEL_ALLOWLIST": "anthropic:claude-test"})
+    assert settings.is_model_allowed("claude-test", provider="anthropic") is True
+    assert settings.is_model_allowed("claude-test", provider="openai") is False

@@ -114,6 +114,24 @@ def make_spawn_subagent_runner(
     return _runner
 
 
+def build_llm_subagents(
+    *,
+    chat_model: BaseChatModel,
+    system_prompts: Mapping[str, str] | None = None,
+) -> dict[str, Subagent]:
+    """Build the default subagent registry backed by any chat model."""
+
+    prompts: Mapping[str, str] = (
+        system_prompts
+        if system_prompts is not None
+        else DEFAULT_SUBAGENT_SYSTEM_PROMPTS
+    )
+    return {
+        name: make_llm_subagent(system_prompt=prompt, chat_model=chat_model)
+        for name, prompt in prompts.items()
+    }
+
+
 def build_openai_subagents(
     model: str = "gpt-5.4-nano",
     *,
@@ -136,10 +154,7 @@ def build_openai_subagents(
 
     chat = build_openai_chat(model, temperature=temperature)
 
-    return {
-        name: make_llm_subagent(system_prompt=prompt, chat_model=chat)
-        for name, prompt in prompts.items()
-    }
+    return build_llm_subagents(chat_model=chat, system_prompts=prompts)
 
 
 def build_openai_spawn_subagent_runner(
@@ -155,5 +170,3 @@ def build_openai_spawn_subagent_runner(
         temperature=temperature,
     )
     return make_spawn_subagent_runner(subagents)
-
-
