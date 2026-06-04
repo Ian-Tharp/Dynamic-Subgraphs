@@ -192,7 +192,9 @@ class LangGraphExecutor:
         # - llm_calls_consumed) and parallel_map cap its fan-out.
         metadata = {
             **md_in,
+            "budget_max_nodes": concrete.spec.budget.max_nodes,
             "budget_max_llm_calls": concrete.spec.budget.max_llm_calls,
+            "budget_max_depth": concrete.spec.budget.max_depth,
             "budget_max_fanout": concrete.spec.budget.max_fanout,
             "wall_deadline_monotonic": deadline,
             "run_id": run_id,
