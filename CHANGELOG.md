@@ -17,12 +17,26 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
   that shows it.
 - Added a "When (not) to reach for it" section — when a fixed graph or a plain
   tool loop is the better tool, stated plainly.
+- Clarified in the README lede that recording is **opt-in** — the public SDK
+  defaults to in-memory execution and writes no files (removed wording that
+  implied every run is persisted).
+- Pointed the PyPI `Documentation` URL at the docs on the active branch.
 
 ### Changed
 - Removed `mock_document_extract` from the default tool allowlist (it echoed
   empty content, so a planner that picked it for a retrieval/compare task
   produced a dead-end run); retrieval now routes to `web_search`. Surfaced by
   the model-comparison eval — see `docs/evals/model-comparison-2026-06.md`.
+
+### Fixed
+- Validator input-provenance: a node input is satisfiable only when produced by
+  an actual **ancestor** of the consuming node, not by any earlier-visited node.
+  A value produced solely by a sibling branch (with no edge ordering it first)
+  is now correctly rejected instead of accepted by topological luck.
+- Validator now rejects reserved / collision-prone node ids — `START`/`END` and
+  ids containing the `__pm_` marker the compiler derives parallel_map internal
+  node names from — plus malformed ids (must match `[A-Za-z0-9_-]+`). Prevents a
+  planner-chosen id from shadowing a generated node.
 
 ### Added
 - Eval/value layer foundation (Slice 7, PR1 — types only, OFF by default):

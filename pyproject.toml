@@ -62,7 +62,7 @@ all = [
 Homepage = "https://github.com/Ian-Tharp/Dynamic-Subgraphs"
 Repository = "https://github.com/Ian-Tharp/Dynamic-Subgraphs"
 Issues = "https://github.com/Ian-Tharp/Dynamic-Subgraphs/issues"
-Documentation = "https://github.com/Ian-Tharp/Dynamic-Subgraphs/tree/main/docs"
+Documentation = "https://github.com/Ian-Tharp/Dynamic-Subgraphs/tree/develop/docs"
 
 # Dev tooling (PEP 735 group; installed by `uv sync` by default).
 [dependency-groups]

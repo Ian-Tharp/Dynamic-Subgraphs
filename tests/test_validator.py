@@ -173,6 +173,108 @@ def test_input_satisfied_by_upstream_output_is_accepted(
     assert {n.id for n in validated.nodes} == {"producer", "consumer"}
 
 
+def test_sibling_branch_output_is_not_a_valid_input(
+    spec_factory, make_node, make_edge
+) -> None:
+    # producer and consumer are siblings off START — no edge guarantees producer
+    # runs before consumer, so consumer's input is NOT satisfied. This used to
+    # pass by topological luck (global available set); now it is correctly flagged.
+    spec = spec_factory(
+        nodes=[
+            make_node("producer", outputs=["sources"]),
+            make_node("consumer", inputs=["sources"], outputs=["draft"]),
+        ],
+        edges=[
+            make_edge("START", "producer"),
+            make_edge("START", "consumer"),
+            make_edge("producer", "END"),
+            make_edge("consumer", "END"),
+        ],
+    )
+
+    with pytest.raises(RegistryValidationError) as exc:
+        validate_graph_spec(spec)
+
+    issue_nodes = {
+        i.node_id for i in exc.value.issues if i.code == "missing_upstream_input"
+    }
+    assert "consumer" in issue_nodes
+
+
+def test_input_from_transitive_ancestor_is_accepted(
+    spec_factory, make_node, make_edge
+) -> None:
+    # x is produced by `a`, consumed by `c`, with `b` in between: availability
+    # must follow the full ancestor chain, not just the direct predecessor.
+    spec = spec_factory(
+        nodes=[
+            make_node("a", outputs=["x"]),
+            make_node("b", outputs=["y"]),
+            make_node("c", inputs=["x"], outputs=["z"]),
+        ],
+        edges=[
+            make_edge("START", "a"),
+            make_edge("a", "b"),
+            make_edge("b", "c"),
+            make_edge("c", "END"),
+        ],
+    )
+
+    validated = validate_graph_spec(spec)
+    assert {n.id for n in validated.nodes} == {"a", "b", "c"}
+
+
+# ---------- node id validation ----------
+
+
+def test_node_id_with_reserved_pm_marker_is_rejected(
+    spec_factory, make_node, make_edge
+) -> None:
+    spec = spec_factory(
+        nodes=[make_node("worker__pm_join", outputs=["x"])],
+        edges=[
+            make_edge("START", "worker__pm_join"),
+            make_edge("worker__pm_join", "END"),
+        ],
+    )
+
+    with pytest.raises(RegistryValidationError) as exc:
+        validate_graph_spec(spec)
+
+    codes = {i.code for i in exc.value.issues}
+    assert "reserved_node_id" in codes
+
+
+def test_node_id_matching_a_terminal_is_rejected(
+    spec_factory, make_node, make_edge
+) -> None:
+    spec = spec_factory(
+        nodes=[make_node("START", outputs=["x"])],
+        edges=[make_edge("START", "END")],
+    )
+
+    with pytest.raises(RegistryValidationError) as exc:
+        validate_graph_spec(spec)
+
+    codes = {i.code for i in exc.value.issues}
+    assert "reserved_node_id" in codes
+
+
+def test_node_id_with_invalid_characters_is_rejected(
+    spec_factory, make_node, make_edge
+) -> None:
+    spec = spec_factory(
+        nodes=[make_node("has space", outputs=["x"])],
+        edges=[make_edge("START", "has space"), make_edge("has space", "END")],
+    )
+
+    with pytest.raises(RegistryValidationError) as exc:
+        validate_graph_spec(spec)
+
+    codes = {i.code for i in exc.value.issues}
+    assert "invalid_node_id" in codes
+
+
 # ---------- budget enforcement ----------
 
 

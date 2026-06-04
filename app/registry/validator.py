@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections import defaultdict, deque
 
 from app.models.graph_spec import (
@@ -18,6 +19,14 @@ from app.registry.registry import Registry
 # request more than this, so the recursion rail holds regardless of what a
 # planner emits. Matches the canonical design's shallow-depth guidance.
 MAX_DEPTH_CEILING = 3
+
+# Node ids must be simple identifiers and must not collide with reserved names:
+# the graph terminals (START/END) or the parallel_map internal marker, since the
+# compiler derives internal node names like "<pm>__pm_worker" / "<pm>__pm_join"
+# from user-supplied ids. A planner-chosen id like "x__pm_join" could otherwise
+# shadow a generated node.
+_VALID_NODE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
+_RESERVED_ID_MARKER = "__pm_"
 
 
 def validate_graph_spec(spec: GraphSpec, registry: Registry | None = None) -> GraphSpec:
@@ -51,6 +60,8 @@ def validate_graph_spec(spec: GraphSpec, registry: Registry | None = None) -> Gr
             seen.add(nid)
         if issues:
             raise RegistryValidationError(issues)
+
+    issues.extend(_validate_node_ids(spec.nodes))
 
     normalized_nodes: list[NodeSpec] = []
     for node in spec.nodes:
@@ -185,44 +196,102 @@ def _reachable_from_start(adj: dict[str, list[str]], node_ids: set[str]) -> set[
     return reachable
 
 
+def _validate_node_ids(nodes: list[NodeSpec]) -> list[RegistryValidationIssue]:
+    """Reject reserved / collision-prone / malformed node ids.
+
+    `NodeSpec.id` is an open string, but the compiler treats ids as the system's
+    addressing scheme: it reserves `START`/`END` for the graph terminals and
+    derives internal parallel_map node names by suffixing user ids (so an id
+    containing `__pm_` could shadow a generated node). Ids are also used in
+    Mermaid, file paths, and edge wiring, so they must be simple identifiers.
+    """
+    issues: list[RegistryValidationIssue] = []
+    for node in nodes:
+        nid = node.id
+        if nid in (SPECIAL_NODE_START, SPECIAL_NODE_END):
+            issues.append(
+                RegistryValidationIssue(
+                    code="reserved_node_id",
+                    message=f"Node id '{nid}' is reserved for the graph terminals",
+                    node_id=nid,
+                    field="id",
+                )
+            )
+        elif _RESERVED_ID_MARKER in nid:
+            issues.append(
+                RegistryValidationIssue(
+                    code="reserved_node_id",
+                    message=(
+                        f"Node id '{nid}' contains the reserved marker "
+                        f"'{_RESERVED_ID_MARKER}' used for parallel_map internal nodes"
+                    ),
+                    node_id=nid,
+                    field="id",
+                )
+            )
+        elif not _VALID_NODE_ID.match(nid):
+            issues.append(
+                RegistryValidationIssue(
+                    code="invalid_node_id",
+                    message=(
+                        f"Node id '{nid}' must be a simple identifier matching "
+                        f"[A-Za-z0-9_-]+ (no spaces or special characters)"
+                    ),
+                    node_id=nid,
+                    field="id",
+                )
+            )
+    return issues
+
+
 def _validate_inputs(
     nodes: list[NodeSpec],
     edges: list[EdgeSpec],
 ) -> list[RegistryValidationIssue]:
-    """Flag inputs that are not produced by any upstream node in topological order."""
-    available: set[str] = set()
+    """Flag inputs not produced by any *ancestor* of the consuming node.
+
+    Availability is per-node: an input is satisfiable only if some node on a
+    directed path *into* this node produces it. Using each node's real ancestors
+    (not a single set of all previously-visited outputs) means a value produced
+    only by a sibling branch — with no edge guaranteeing it runs first — is
+    correctly rejected rather than accepted by topological luck.
+    """
     issues: list[RegistryValidationIssue] = []
-
-    adj: dict[str, list[str]] = defaultdict(list)
-    in_degree: dict[str, int] = {n.id: 0 for n in nodes}
-    for edge in edges:
-        src, dst = edge.from_, edge.to
-        if src in in_degree and dst in in_degree:
-            adj[src].append(dst)
-            in_degree[dst] += 1
-
-    queue = deque([nid for nid, deg in in_degree.items() if deg == 0])
     node_by_id = {n.id: n for n in nodes}
 
-    while queue:
-        nid = queue.popleft()
-        node = node_by_id[nid]
+    predecessors: dict[str, list[str]] = defaultdict(list)
+    for edge in edges:
+        if edge.from_ in node_by_id and edge.to in node_by_id:
+            predecessors[edge.to].append(edge.from_)
+
+    def _ancestor_outputs(node_id: str) -> set[str]:
+        produced: set[str] = set()
+        seen: set[str] = set()
+        stack = list(predecessors[node_id])
+        while stack:
+            current = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            produced.update(node_by_id[current].outputs)
+            stack.extend(predecessors[current])
+        return produced
+
+    for node in nodes:
+        available = _ancestor_outputs(node.id)
         for inp in node.inputs:
             if inp not in available:
                 issues.append(
                     RegistryValidationIssue(
                         code="missing_upstream_input",
-                        message=f"Input '{inp}' is not available before node '{nid}'",
-                        node_id=nid,
+                        message=(
+                            f"Input '{inp}' is not produced by any ancestor of "
+                            f"node '{node.id}'"
+                        ),
+                        node_id=node.id,
                         field=f"inputs.{inp}",
                     )
                 )
-        for out_key in node.outputs:
-            available.add(out_key)
-        for nxt in adj[nid]:
-            in_degree[nxt] -= 1
-            if in_degree[nxt] == 0:
-                queue.append(nxt)
 
     return issues
 

@@ -7,15 +7,16 @@
 
 A governed runtime for LLM-generated workflows. A stable `Supervisor` turns a prompt
 into a **validated plan** — data, never executable code — then compiles and runs it as
-a **transient** LangGraph workflow over a bounded, allowlisted vocabulary of node kinds,
-recording every run as a replayable, diffable, cost-attributed artifact under
-`runs/<run_id>/`.
+a **transient** LangGraph workflow over a bounded, allowlisted vocabulary of node kinds.
+Recording is **opt-in**: when enabled, each run is captured as a replayable, diffable,
+cost-attributed artifact under `runs/<run_id>/` — the public SDK defaults to in-memory
+execution and writes no files.
 
 What that buys you over a free-form agent loop: the model proposes the workflow but
 never executes arbitrary code; the compiler only instantiates registry-approved node
-kinds; recursion is depth- and budget-capped; and every run — success or failure — is
-inspectable and replayable. LangGraph types stay behind the `compiler/` and `runtime/`
-boundaries. An optional thin FastAPI layer exposes the supervisor over HTTP.
+kinds; recursion is depth- and budget-capped; and any run — success or failure — can be
+recorded for inspection and replay. LangGraph types stay behind the `compiler/` and
+`runtime/` boundaries. An optional thin FastAPI layer exposes the supervisor over HTTP.
 
 ## What can it build?
 
