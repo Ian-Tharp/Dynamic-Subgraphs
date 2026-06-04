@@ -75,7 +75,9 @@ def test_fanout_is_host_owned() -> None:
 
 def test_host_max_depth_is_clamped_to_ceiling() -> None:
     policy = ExecutionPolicy(max_depth=99)
-    assert policy.max_depth == MAX_DEPTH_CEILING  # a misconfigured host can't raise the rail
+    assert (
+        policy.max_depth == MAX_DEPTH_CEILING
+    )  # a misconfigured host can't raise the rail
 
 
 def test_allow_sets_are_coerced_to_frozenset() -> None:
@@ -144,7 +146,10 @@ def test_child_cannot_exceed_remaining_even_if_request_is_large() -> None:
     policy = ExecutionPolicy(max_nodes=12)
     req = GraphBudget(max_nodes=1000)
     eff = _resolve(
-        policy, req, remaining=RemainingBudget(nodes=1, llm_calls=0, depth=1), is_child=True
+        policy,
+        req,
+        remaining=RemainingBudget(nodes=1, llm_calls=0, depth=1),
+        is_child=True,
     )
     assert eff.max_nodes == 1
     assert eff.max_llm_calls == 0
@@ -155,7 +160,9 @@ def test_child_cannot_exceed_remaining_even_if_request_is_large() -> None:
 
 def test_effective_budget_dict_round_trip() -> None:
     eff = _resolve(
-        ExecutionPolicy(allowed_node_kinds=frozenset({NodeKind.LLM_CALL, NodeKind.REDUCE})),
+        ExecutionPolicy(
+            allowed_node_kinds=frozenset({NodeKind.LLM_CALL, NodeKind.REDUCE})
+        ),
         GraphBudget(max_nodes=5),
     )
     restored = EffectiveBudget.from_dict(eff.as_dict())

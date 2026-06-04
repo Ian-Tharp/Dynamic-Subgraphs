@@ -144,9 +144,7 @@ class EffectiveBudget:
         )
 
 
-def _intersect(
-    host: frozenset[str] | None, registry: frozenset[str]
-) -> frozenset[str]:
+def _intersect(host: frozenset[str] | None, registry: frozenset[str]) -> frozenset[str]:
     """None => no host narrowing (full registry set); else host ∩ registry."""
     return registry if host is None else (host & registry)
 
