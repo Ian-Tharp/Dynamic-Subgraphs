@@ -28,12 +28,20 @@ runs/
 docs/research/
 docs/specs/
 docs/superpowers/
+# Internal design / planning docs — kept local, not pushed to the public repo
+docs/dynamic-graphs-design.md
+docs/dynamic-graphs-design-claude.md
+docs/sdk-next-steps.md
+docs/iterative-supervisor.md
 
 # Local agent tooling (personal skills, not shipped with the SDK)
 .claude/skills/
 
 # Local dev notes (personal; shared conventions live in CONTRIBUTING.md / docs/)
 CLAUDE.local.md
+
+# Scratch PR body (used with `gh pr create --body-file`)
+.pr_body.md
 
 # IDE / OS
 .vscode/
