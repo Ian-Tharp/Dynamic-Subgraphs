@@ -121,6 +121,7 @@ class RunConfig:
             self.worker_ref.provider,
             self.reducer_ref.provider,
             self.subagent_ref.provider,
+            self.judge_ref.provider,
         }
         return tuple(sorted(names))
 
