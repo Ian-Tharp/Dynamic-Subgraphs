@@ -114,8 +114,8 @@ eval/value layer.
 - `DynamicSubgraphs.capabilities()` lists `node_kinds`; `NODE_KINDS` is a runtime
   tuple sourced from the `NodeKind` enum, with guard tests so the agent-facing
   surface can't drift from the compiler.
-- `py.typed` (PEP 561), optional extras (`api`, `openai`, `anthropic`, `ollama`,
-  `cost`, `all`), and `docs/specs/` design docs for the eval + policy work.
+- `py.typed` (PEP 561) and optional extras (`api`, `openai`, `anthropic`,
+  `ollama`, `cost`, `all`).
 
 ### Changed
 - Removed `mock_document_extract` from the default tool allowlist (it echoed
