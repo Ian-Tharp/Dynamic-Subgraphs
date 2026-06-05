@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.models import NodeKind
 from app.registry.validator import MAX_DEPTH_CEILING, validate_graph_spec
+from app.runtime.budget_ledger import BudgetLedger
 from app.runtime.runners import NodeRunner
 
 if TYPE_CHECKING:
@@ -85,6 +86,7 @@ def build_spawn_subgraph_runner(
     launcher: ChildLauncher,
     *,
     depth_ceiling: int = MAX_DEPTH_CEILING,
+    ledger_registry: Mapping[str, BudgetLedger] | None = None,
 ) -> NodeRunner:
     """Build the NodeRunner for `spawn_subgraph` nodes.
 
@@ -120,20 +122,32 @@ def build_spawn_subgraph_runner(
         }
 
         # Compose the child's budget against the parent's REMAINING node and LLM
-        # allowance so a nest can't outspend the root. `consumed` reflects earlier
-        # *serial* siblings' rolled-up spend; concurrent sibling spawns scheduled
-        # in one superstep read the same pre-merge value — a known TOCTOU, bounded
-        # by the depth ceiling (reserve-and-refund is a follow-up).
+        # allowance so a nest can't outspend the root. The per-graph `BudgetLedger`
+        # (owned by the executor, looked up by this graph's run_id) reserves the
+        # remaining allowance under a lock, so CONCURRENT spawn_subgraph siblings in
+        # one superstep can't each claim the full remaining — the documented TOCTOU.
+        # Whatever the child doesn't spend is refunded in the `finally`.
         counters = state.get("counters", {}) or {}
-
-        def _remaining(budget_key: str, consumed_key: str) -> int | None:
-            cap = metadata.get(budget_key)
-            if cap is None:
-                return None
-            return max(0, int(cap) - int(counters.get(consumed_key, 0)))
-
-        max_llm_calls = _remaining("budget_max_llm_calls", "llm_calls_consumed")
-        max_nodes = _remaining("budget_max_nodes", "nodes_executed")
+        budgets: dict[str, int | None] = {
+            "llm_calls": metadata.get("budget_max_llm_calls"),
+            "nodes": metadata.get("budget_max_nodes"),
+        }
+        consumed = {
+            "llm_calls": int(counters.get("llm_calls_consumed", 0)),
+            "nodes": int(counters.get("nodes_executed", 0)),
+        }
+        ledger = (
+            ledger_registry.get(parent_run_id) if ledger_registry is not None else None
+        )
+        if ledger is not None:
+            grant = ledger.reserve(budgets=budgets, consumed=consumed)
+        else:
+            # No ledger seeded (a bare-executor unit test): plain remaining — a
+            # single spawn with no concurrent-sibling enforcement.
+            grant = {
+                key: (None if cap is None else max(0, cap - consumed[key]))
+                for key, cap in budgets.items()
+            }
 
         child_run_id = f"{parent_run_id}__sg_{name}"
         # If this run is itself a replay (metadata carries the ORIGINAL parent's
@@ -141,29 +155,42 @@ def build_spawn_subgraph_runner(
         # original child run id; the launcher loads it instead of re-planning.
         replay_of = metadata.get("replay_of")
         original_child_run_id = f"{replay_of}__sg_{name}" if replay_of else None
-        result = launcher(
-            sub_goal,
-            run_id=child_run_id,
-            graph_depth=depth + 1,
-            parent_run_id=parent_run_id,
-            inputs=inputs,
-            max_llm_calls=max_llm_calls,
-            max_nodes=max_nodes,
-            max_depth=effective_ceiling,
-            wall_deadline=metadata.get("wall_deadline_monotonic"),
-            replay_of=original_child_run_id,
-        )
-        if result.status != "ok":
-            raise SubgraphChildFailed(
-                f"child subgraph {child_run_id!r} ended with status "
-                f"{result.status!r}: {result.response}"
+
+        spent = {"llm_calls": 0, "nodes": 0}
+        try:
+            result = launcher(
+                sub_goal,
+                run_id=child_run_id,
+                graph_depth=depth + 1,
+                parent_run_id=parent_run_id,
+                inputs=inputs,
+                max_llm_calls=grant["llm_calls"],
+                max_nodes=grant["nodes"],
+                max_depth=effective_ceiling,
+                wall_deadline=metadata.get("wall_deadline_monotonic"),
+                replay_of=original_child_run_id,
             )
-        # Hand the child's values back under `result` (mapped to the node's
-        # declared output) and roll the child's ACTUAL spend up to the parent
-        # ledger via the reserved `__spend__` key (see make_node_wrapper). The
-        # spawn node makes no *direct* LLM call, so all llm spend here is the
-        # child's — no floor double-count.
-        return {"result": dict(result.values), "__spend__": dict(result.counters)}
+            spent = {
+                "llm_calls": int(result.counters.get("llm_calls_consumed", 0)),
+                "nodes": int(result.counters.get("nodes_executed", 0)),
+            }
+            if result.status != "ok":
+                raise SubgraphChildFailed(
+                    f"child subgraph {child_run_id!r} ended with status "
+                    f"{result.status!r}: {result.response}"
+                )
+            # Hand the child's values back under `result` (mapped to the node's
+            # declared output) and roll the child's ACTUAL spend up to the parent
+            # ledger via the reserved `__spend__` key (see make_node_wrapper). The
+            # spawn node makes no *direct* LLM call, so all llm spend here is the
+            # child's — no floor double-count.
+            return {"result": dict(result.values), "__spend__": dict(result.counters)}
+        finally:
+            # Return the unused portion of the reservation so an under-spending or
+            # failed child frees budget for later siblings (spent stays 0 if the
+            # launcher raised before the child ran — a full refund).
+            if ledger is not None:
+                ledger.refund(reserved=grant, spent=spent)
 
     return _runner
 
