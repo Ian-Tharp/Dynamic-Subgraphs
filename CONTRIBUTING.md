@@ -54,7 +54,10 @@ uv run pre-commit install
 
 ## Conventions
 
-- **Branches:** feature/fix branches off `main`; open a PR (don't push to `main`).
+- **Branches:** branch off `develop` (the integration branch) and open your PR
+  against `develop`. `develop` and `main` are protected — both require a green CI
+  run and a maintainer merge, so never push to either directly. `main` tracks the
+  last release; maintainers fast-forward `develop` into it at release time.
 - **Commits:** [Conventional Commits](https://www.conventionalcommits.org/)
   (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`).
 - **Architecture:** respect the layered boundaries in
