@@ -1,9 +1,10 @@
 """DS eval / value layer — structural governance scoring for completed runs.
 
-Types only at this stage (Slice 7, PR1): the `EvalGate` protocol, the persisted
-`EvalResult`, and the `EvalContext` a gate scores from. Gate implementations and
-engine wiring land in later PRs; importing this package has no effect on a run
-until an `EvalGate` is configured on `EngineConfig`.
+Exports the `EvalGate` protocol, the deterministic `DeterministicEvalGate`
+implementation (and its `build_deterministic_eval_gate` factory), the persisted
+`EvalResult`, and the `EvalContext` a gate scores from. The gate is off by
+default: importing this package has no effect on a run until an `EvalGate` is
+configured on `EngineConfig` (engine wiring lands in a later slice).
 """
 
 from __future__ import annotations
