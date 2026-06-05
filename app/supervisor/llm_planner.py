@@ -23,6 +23,7 @@ from typing import Any, Protocol
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.compiler import COMPILER_HANDLED_KINDS
+from app.errors import DynamicSubgraphsError
 from app.models import GraphSpec, NodeKind
 from app.registry import (
     Registry,
@@ -194,7 +195,7 @@ corrected spec; do not narrate.
 """
 
 
-class PlannerError(RuntimeError):
+class PlannerError(DynamicSubgraphsError, RuntimeError):
     """Raised when the planner cannot produce a valid GraphSpec."""
 
 

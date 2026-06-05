@@ -17,6 +17,7 @@ import contextlib
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from app.errors import DynamicSubgraphsError
 from app.models import NodeKind
 from app.registry.validator import MAX_DEPTH_CEILING, validate_graph_spec
 from app.runtime.budget_ledger import BudgetLedger
@@ -32,7 +33,7 @@ if TYPE_CHECKING:
     from app.runtime.executor import GraphExecutor
 
 
-class SubgraphError(RuntimeError):
+class SubgraphError(DynamicSubgraphsError, RuntimeError):
     """Base for spawn_subgraph failures — each halts the parent node fail-closed."""
 
 
