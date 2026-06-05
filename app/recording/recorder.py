@@ -416,12 +416,10 @@ class FileRecorder:
             if output_path.exists():
                 try:
                     out = json.loads(output_path.read_text(encoding="utf-8"))
-                    if out.get("ok"):
-                        status = "ok"
-                    elif out.get("error"):
-                        status = "failed"
-                    else:
-                        status = "failed" if out.get("errors") else "ok"
+                    # Trust the persisted `ok` flag (the authoritative field) rather
+                    # than re-inferring from error/errors — the old triple-fallback
+                    # could report "ok" for a record with ok=False and no errors list.
+                    status = "ok" if out.get("ok") else "failed"
                 except (json.JSONDecodeError, OSError):
                     status = "unknown"
             node_count = 0
