@@ -62,6 +62,16 @@ def _slot_prefix(output_key: str) -> str:
     return f"{output_key}__"
 
 
+def _output_key(node: NodeSpec) -> str:
+    """The value key a parallel_map writes its assembled list under.
+
+    The node's first declared output, else a stable id-derived fallback. Factored
+    out so the dispatcher, worker, and joiner can't compute it differently — a
+    mismatch would silently collect an empty list at the join.
+    """
+    return node.outputs[0] if node.outputs else f"{node.id}_results"
+
+
 def make_parallel_map_dispatcher(
     node: NodeSpec,
     *,
@@ -77,7 +87,7 @@ def make_parallel_map_dispatcher(
     """
 
     over_key = node.params["over"]
-    output_key = node.outputs[0] if node.outputs else f"{node.id}_results"
+    output_key = _output_key(node)
 
     def dispatch(state: DynamicRunState) -> Command:
         started_at = datetime.now(UTC)
@@ -224,7 +234,7 @@ def make_parallel_map_worker(
     reducer, per-worker deltas SUM across the whole fan-out.
     """
 
-    output_key = node.outputs[0] if node.outputs else f"{node.id}_results"
+    output_key = _output_key(node)
     child_params_template: dict[str, Any] = dict(node.params.get("child_params", {}))
 
     def worker(state: DynamicRunState) -> Any:
@@ -306,7 +316,7 @@ def make_parallel_map_joiner(
 ) -> Callable[[DynamicRunState], dict[str, Any]]:
     """Build the LangGraph node function that converges parallel results."""
 
-    output_key = node.outputs[0] if node.outputs else f"{node.id}_results"
+    output_key = _output_key(node)
     slot_prefix = _slot_prefix(output_key)
     start_meta_key = f"{_PM_START_META_PREFIX}{node.id}"
 
