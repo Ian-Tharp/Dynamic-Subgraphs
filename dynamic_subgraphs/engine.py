@@ -382,6 +382,11 @@ class EngineConfig:
     # and you usually don't need this — set it only to override a price or to
     # cover local / custom-endpoint models LiteLLM doesn't know.
     pricing: Pricing | None = None
+    # Optional domain steering appended to the planner's system prompt (the
+    # GraphSpec contract is preserved). Bias planning — e.g. "prefer parallel_map
+    # over deep recursion for worldbuilding" — without owning the whole prompt.
+    # None leaves the default planner prompt unchanged.
+    planner_guidance: str | None = None
 
     def model_selection(self) -> ModelSelection:
         """The per-role `ModelSelection` this config resolves to."""
@@ -451,6 +456,7 @@ class DynamicSubgraphs:
         self._pricing = config.pricing
         self._policy = config.policy
         self._max_plan_attempts = config.max_plan_attempts
+        self._planner_guidance = config.planner_guidance
 
     @property
     def config(self) -> EngineConfig:
@@ -547,6 +553,7 @@ class DynamicSubgraphs:
             chat_callbacks=[usage_handler],
             policy=self._policy,
             max_plan_attempts=self._max_plan_attempts,
+            planner_guidance=self._planner_guidance,
         )
         result = supervisor.run(prompt, run_id=run_id)
 

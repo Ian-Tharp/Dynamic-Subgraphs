@@ -211,7 +211,12 @@ class LLMPlanner:
             instance from `.invoke(messages)`.
         registry: Registry used for validation. Defaults to the project default.
         max_retries: how many times to ask the model to repair an invalid spec.
-        system_prompt: override only if you have a specific reason to.
+        system_prompt: full replacement of the default planner prompt — override
+            only if you have a specific reason to (you then own keeping the
+            GraphSpec contract intact).
+        guidance: domain steering appended to the default planner prompt, with the
+            GraphSpec contract preserved — the safe way to bias planning (e.g.
+            "prefer parallel_map over deep recursion") without owning the prompt.
     """
 
     def __init__(
@@ -221,6 +226,7 @@ class LLMPlanner:
         registry: Registry | None = None,
         max_retries: int = 2,
         system_prompt: str | None = None,
+        guidance: str | None = None,
         executable_kinds: set[NodeKind] | None = None,
         executable_reduce_strategies: set[str] | None = None,
     ) -> None:
@@ -237,7 +243,7 @@ class LLMPlanner:
             if executable_reduce_strategies is not None
             else {"concat", "merge_dict"}
         )
-        self._system_prompt = system_prompt or PLANNER_SYSTEM_PROMPT.format(
+        base_prompt = system_prompt or PLANNER_SYSTEM_PROMPT.format(
             tools=", ".join(sorted(self._registry.tools)) or "(none)",
             subagents=", ".join(sorted(self._registry.subagents)) or "(none)",
             executable_kinds=", ".join(sorted(k.value for k in self._executable_kinds))
@@ -246,6 +252,13 @@ class LLMPlanner:
                 f'"{s}"' for s in sorted(self._executable_reduce_strategies)
             )
             or '"concat"',
+        )
+        # Guidance is appended *after* the contract so it can bias choices without
+        # removing the hard rules the model must follow to emit a valid spec.
+        self._system_prompt = (
+            f"{base_prompt}\n\n## Additional planning guidance\n{guidance}"
+            if guidance
+            else base_prompt
         )
 
     def __call__(self, prompt: str) -> GraphSpec:

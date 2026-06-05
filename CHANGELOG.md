@@ -20,6 +20,12 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
   `instruction_sha256`. Scoring is byte-stable across re-runs. Off by default and
   not yet wired into the engine — recorder persistence (`eval.json`) and
   `EngineConfig.eval_gate` land in the following slices.
+- `EngineConfig(planner_guidance=...)` — optional domain steering appended to the
+  planner's system prompt, with the GraphSpec contract preserved. A safe way to
+  bias planning (e.g. "prefer `parallel_map` over deep recursion") without owning
+  the whole prompt. Full-prompt replacement remains on the internal
+  `LLMPlanner(system_prompt=...)` hook; a unified `PromptOverrides` surface (incl.
+  the eval rubric) is a planned follow-up.
 
 ### Fixed
 - `parallel_map` fan-out is now debited against the host `max_llm_calls` budget at
