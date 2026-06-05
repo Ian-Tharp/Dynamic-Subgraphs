@@ -34,6 +34,7 @@ from dynamic_subgraphs.engine import (
     TokenUsage,
 )
 from dynamic_subgraphs.eval import (
+    DeterministicEvalGate,
     EvalContext,
     EvalGate,
     EvalReference,
@@ -41,6 +42,7 @@ from dynamic_subgraphs.eval import (
     EvalTags,
     RunFingerprint,
     ScoreComponent,
+    build_deterministic_eval_gate,
 )
 from dynamic_subgraphs.recording import Artifact, Recording
 from dynamic_subgraphs.types import (
@@ -61,6 +63,7 @@ __all__ = [
     "RUN_STATUSES",
     "STRUCTURED_METHODS",
     "Artifact",
+    "DeterministicEvalGate",
     "DynamicSubgraphs",
     "EngineConfig",
     "EvalContext",
@@ -80,4 +83,5 @@ __all__ = [
     "ScoreComponent",
     "StructuredMethod",
     "TokenUsage",
+    "build_deterministic_eval_gate",
 ]
