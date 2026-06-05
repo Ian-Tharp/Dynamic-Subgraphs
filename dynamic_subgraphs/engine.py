@@ -497,7 +497,7 @@ class DynamicSubgraphs:
             populated for recorded artifacts). `.to_dict()` for JSON.
 
         Example:
-            >>> engine = DynamicSubgraphs(model=Model("openai", "gpt-5.4-nano"))
+            >>> engine = DynamicSubgraphs(EngineConfig(model=Model("openai", "gpt-5.4-nano")))
             >>> r = engine.run("Compare A and B.", record=Recording.visual_only())
             >>> r.ok, "graph.mmd" in r.artifacts
             (True, True)
