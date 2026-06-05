@@ -7,6 +7,51 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-06-05
+
+The headline of this release is the **start of the eval/value layer**: a
+deterministic, token-free run scorer (`DeterministicEvalGate`) that turns a
+completed run into a comparable, queryable `EvalResult`. It also adds **safe
+planner steering** (`EngineConfig.planner_guidance`) and tightens **fan-out
+budget enforcement** so a `parallel_map` can no longer overspend the host's
+LLM-call budget.
+
+### Upgrade notes (behavior changes since 0.2.0)
+- **`parallel_map` fan-out now respects `max_llm_calls`.** A fan-out of `llm_call`
+  workers that would push the run past its granted LLM-call budget now halts
+  fail-closed (`LlmCallBudgetExceeded`) at dispatch — previously only the fan-out
+  *width* (`max_fanout`) was bounded, so a wide fan-out could overspend. Typical
+  plans are unaffected; raise `EngineConfig(policy=ExecutionPolicy(max_llm_calls=...))`
+  if you intend large `llm_call` fan-outs.
+
+### Added
+- `DeterministicEvalGate` — the structural eval scorer (Slice 7). Grades a
+  completed run into a typed `EvalResult` across four deterministic, token-free
+  dimensions: plan validity (registry re-validation + budget adherence),
+  grounding (did a `web_search` actually produce results when the task called
+  for it; inapplicable runs drop out rather than dilute the score),
+  reference-anchored goal completion (checklist coverage, with a labelled
+  low-confidence keyword heuristic when no `EvalReference` is supplied), and a
+  token-parsimony cost proxy. Emits a shape-aware `topology_signature` (a branch
+  DAG never collides with a linear chain of the same kinds) plus a separate
+  `instruction_sha256`. Scoring is byte-stable across re-runs. Off by default and
+  not yet wired into the engine — recorder persistence (`eval.json`) and
+  `EngineConfig.eval_gate` land in the following slices.
+- `EngineConfig(planner_guidance=...)` — optional domain steering appended to the
+  planner's system prompt, with the GraphSpec contract preserved. A safe way to
+  bias planning (e.g. "prefer `parallel_map` over deep recursion") without owning
+  the whole prompt. Full-prompt replacement remains on the internal
+  `LLMPlanner(system_prompt=...)` hook; a unified `PromptOverrides` surface (incl.
+  the eval rubric) is a planned follow-up.
+
+### Fixed
+- `parallel_map` fan-out is now debited against the host `max_llm_calls` budget at
+  dispatch and halts fail-closed (`LlmCallBudgetExceeded`) when a within-width-cap
+  fan-out would overrun the granted LLM-call budget. Previously the fan-out *width*
+  was capped (`max_fanout`) but per-worker LLM spend was only counted after the
+  fact, so a wide fan-out of `llm_call` workers could exceed `max_llm_calls`.
+  `tool_call` fan-outs are unaffected (they spend no LLM calls).
+
 ## [0.2.0] — 2026-06-04
 
 The headline of this release is **governance that's actually enforced**: the

@@ -342,6 +342,51 @@ def test_parallel_map_ledger_sums_llm_calls_across_workers() -> None:
     assert counters["nodes_executed"] == 5
 
 
+def test_parallel_map_halts_when_fanout_would_exceed_llm_budget() -> None:
+    # A fan-out within the width cap can still overrun max_llm_calls: each
+    # llm_call worker spends a call. The dispatcher must debit at dispatch and
+    # halt fail-closed before any worker runs.
+    from app.policy import ExecutionPolicy
+
+    spec = _spec_with_parallel_map()
+    # Host caps LLM calls at 3 (fan-out width cap stays at the default 64, so the
+    # *llm* budget is what bites). Static validation passes: seed + pm-child = 2 <= 3.
+    validated = validate_graph_spec(spec, policy=ExecutionPolicy(max_llm_calls=3))
+    assert validated.budget.max_llm_calls == 3
+
+    items = [f"item-{i}" for i in range(10)]  # seed(1) + 10 workers = 11 > 3
+    executor = LangGraphExecutor(
+        runners={NodeKind.LLM_CALL: _seed_for_node_then_identity(items)}
+    )
+
+    result = executor.execute(executor.compile(validated), run_id="pm-llm-budget")
+
+    assert result.ok is False
+    assert result.state["errors"][0]["type"] == "LlmCallBudgetExceeded"
+    assert "max_llm_calls" in result.error
+    # Fail-closed before any worker ran: no results produced.
+    assert "fan_results" not in result.state.get("values", {})
+
+
+def test_parallel_map_within_llm_budget_dispatches() -> None:
+    # The guard must not false-positive: seed(1) + 5 workers = 6 <= 8.
+    from app.policy import ExecutionPolicy
+
+    spec = _spec_with_parallel_map()
+    validated = validate_graph_spec(spec, policy=ExecutionPolicy(max_llm_calls=8))
+
+    items = [f"item-{i}" for i in range(5)]
+    executor = LangGraphExecutor(
+        runners={NodeKind.LLM_CALL: _seed_for_node_then_identity(items)}
+    )
+
+    result = executor.execute(executor.compile(validated), run_id="pm-llm-ok")
+
+    assert result.ok is True
+    assert len(result.state["values"]["fan_results"]) == 5
+    assert result.state["counters"]["llm_calls_consumed"] == 6
+
+
 # ---------- helpers (lower) ----------
 
 

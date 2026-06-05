@@ -24,11 +24,11 @@ repos:
         language: system
         types: [python]
       - id: mypy
-        name: mypy (public package strict + governance core)
-        entry: uv run mypy dynamic_subgraphs app/policy.py
+        name: mypy (strict — public package + governance, models, registry)
+        entry: uv run mypy dynamic_subgraphs app/policy.py app/models app/registry
         language: system
         pass_filenames: false
-        files: ^(dynamic_subgraphs/|app/policy\.py)
+        files: ^(dynamic_subgraphs/|app/policy\.py|app/models/|app/registry/)
       - id: pytest
         name: pytest (offline suite — same as CI)
         # Runs the full offline suite (integration tests auto-skip via the

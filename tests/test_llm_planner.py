@@ -42,6 +42,37 @@ class FakeStructuredModel:
         return self._responses.pop(0)
 
 
+# ---------- planner guidance (prompt append) ----------
+
+
+def test_guidance_is_appended_to_the_default_planner_prompt() -> None:
+    # Arrange / Act
+    planner = LLMPlanner(
+        FakeStructuredModel([]),
+        guidance="Prefer parallel_map over deep recursion.",
+    )
+
+    # Assert — guidance present, contract preserved (not replaced).
+    assert "Additional planning guidance" in planner._system_prompt
+    assert "Prefer parallel_map over deep recursion." in planner._system_prompt
+    assert "Hard rules:" in planner._system_prompt
+
+
+def test_no_guidance_leaves_the_default_prompt_unchanged() -> None:
+    planner = LLMPlanner(FakeStructuredModel([]))
+    assert "Additional planning guidance" not in planner._system_prompt
+
+
+def test_guidance_appends_even_to_a_full_system_prompt_override() -> None:
+    planner = LLMPlanner(
+        FakeStructuredModel([]),
+        system_prompt="CUSTOM CONTRACT",
+        guidance="STEER",
+    )
+    assert planner._system_prompt.startswith("CUSTOM CONTRACT")
+    assert "STEER" in planner._system_prompt
+
+
 # ---------- spec helpers ----------
 
 
