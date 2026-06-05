@@ -473,7 +473,7 @@ def build_openai_iteration_decider(
     structured = chat.with_structured_output(
         _IterationDecisionPayload, method="function_calling"
     )
-    return build_llm_iteration_decider(
+    return LlmIterationDecider(
         structured,
         success_criteria=success_criteria,
         fallback=fallback,
@@ -497,27 +497,8 @@ def build_provider_iteration_decider(
         model_ref,
         _IterationDecisionPayload,
     )
-    return build_llm_iteration_decider(
-        structured,
-        success_criteria=success_criteria,
-        fallback=fallback,
-        judge_failed_runs=judge_failed_runs,
-        value_render_limit=value_render_limit,
-    )
-
-
-def build_llm_iteration_decider(
-    structured_model: _StructuredJudgeModel,
-    *,
-    success_criteria: str | None = None,
-    fallback: IterationDecider | None = None,
-    judge_failed_runs: bool = False,
-    value_render_limit: int = 4000,
-) -> LlmIterationDecider:
-    """Build an LLM judge from any provider's structured-output model."""
-
     return LlmIterationDecider(
-        structured_model,
+        structured,
         success_criteria=success_criteria,
         fallback=fallback,
         judge_failed_runs=judge_failed_runs,
