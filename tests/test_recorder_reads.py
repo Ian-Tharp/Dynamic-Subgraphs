@@ -63,3 +63,12 @@ def test_artifact_path_rejects_traversal(tmp_path: Path) -> None:
 def test_run_dir_points_at_run(tmp_path: Path) -> None:
     recorder = _seed_run(tmp_path, "rec-001")
     assert recorder.run_dir("rec-001") == tmp_path / "rec-001"
+
+
+def test_run_dir_rejects_bare_dot_segments(tmp_path: Path) -> None:
+    # The charset excludes separators, so the only traversal token is an all-dots
+    # id ('..' would select the runs-root parent). It must be refused.
+    recorder = FileRecorder(root_dir=tmp_path)
+    for bad in ("..", ".", "..."):
+        with pytest.raises(ValueError):
+            recorder.run_dir(bad)

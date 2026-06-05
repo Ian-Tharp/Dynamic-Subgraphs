@@ -368,7 +368,7 @@ class FileRecorder:
 
     def run_dir(self, run_id: str) -> Path:
         _validate_run_id(run_id)
-        return self._root / run_id
+        return self._contained(self._root / run_id, run_id)
 
     def load_output(self, run_id: str) -> dict[str, Any]:
         _validate_run_id(run_id)
@@ -381,9 +381,21 @@ class FileRecorder:
 
     def artifact_path(self, run_id: str, name: str) -> Path:
         _validate_run_id(run_id)
-        if not name or not all(ch in _SAFE_RUN_ID_CHARS for ch in name):
+        name_ok = bool(name) and all(ch in _SAFE_RUN_ID_CHARS for ch in name)
+        if not name_ok or set(name) == {"."}:
             raise ValueError(f"artifact name contains unsafe characters: {name!r}")
-        return self._root / run_id / "artifacts" / name
+        return self._contained(self._root / run_id / "artifacts" / name, run_id)
+
+    def _contained(self, path: Path, run_id: str) -> Path:
+        """Defense in depth: confirm a built path stays under the runs root.
+
+        `_validate_run_id` already rejects traversal tokens, so this never fires
+        in practice — it's a backstop so any future charset change can't silently
+        reintroduce an escape.
+        """
+        if not path.resolve().is_relative_to(self._root.resolve()):
+            raise ValueError(f"run_id {run_id!r} resolves outside the runs root")
+        return path
 
     def list_runs(self) -> list[dict[str, Any]]:
         """Summaries of every recorded run directory (id, status, node count).
@@ -484,6 +496,12 @@ def _validate_run_id(run_id: str) -> None:
         raise ValueError(
             f"run_id contains unsafe characters (allowed: letters, digits, '-', '_', '.'): {run_id!r}"
         )
+    # `.` is allowed *inside* an id (e.g. a model tag like "gpt-5.4"), but an id
+    # that is nothing but dots ('.', '..', ...) is a path-traversal token: with no
+    # separator in the charset, `run_dir("..")` would otherwise select the runs
+    # root's parent. Refuse it so a run_id can never escape the root.
+    if set(run_id) == {"."}:
+        raise ValueError(f"run_id may not be a bare dot path segment: {run_id!r}")
 
 
 def _extract_output(result: ExecutionResult) -> dict[str, object]:
