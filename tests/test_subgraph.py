@@ -192,7 +192,7 @@ def _child_spec(graph_id: str, *, nodes, edges, budget=None) -> GraphSpec:
     return GraphSpec(**kwargs)
 
 
-def test_launcher_plans_and_runs_a_child(tmp_path) -> None:
+def test_launcher_plans_and_runs_a_child() -> None:
     from app.runtime.executor import LangGraphExecutor
 
     child = _child_spec(
@@ -387,7 +387,7 @@ def test_launcher_bans_wait_for_event_in_children() -> None:
         launcher("g", run_id="p__sg_w", graph_depth=1, parent_run_id="p", inputs={})
 
 
-def test_launcher_seeds_graph_depth_into_child(tmp_path) -> None:
+def test_launcher_seeds_graph_depth_into_child() -> None:
     from app.runtime.executor import LangGraphExecutor
 
     child = _child_spec(

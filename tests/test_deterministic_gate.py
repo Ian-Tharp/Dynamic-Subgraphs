@@ -199,7 +199,8 @@ def test_reference_coverage_scores_goal_completion() -> None:
     assert goal.method == "reference"
     assert goal.signals["covered"] == 1.0
     assert goal.signals["required"] == 2.0
-    assert 0.4 <= goal.score <= 0.6
+    # Deterministic scorer: covered/required = 1/2 is exactly 0.5, not a band.
+    assert goal.score == 0.5
 
 
 def test_must_not_include_penalizes_goal_completion() -> None:
