@@ -33,7 +33,7 @@ from app.recording.mermaid import render_mermaid
 from app.runtime import ExecutionResult
 
 if TYPE_CHECKING:
-    from app.supervisor.iteration import IterativeSupervisorResult
+    from app.supervisor.iteration import IterationDecision, IterativeSupervisorResult
 
 _SAFE_RUN_ID_CHARS: frozenset[str] = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_."
@@ -264,7 +264,7 @@ class FileRecorder:
         overwrite: bool | None = None,
     ) -> RunRecord:
         run_id = result.trace.run_id
-        _validate_run_id(run_id)
+        validate_run_id(run_id)
 
         effective_overwrite = self._overwrite if overwrite is None else overwrite
 
@@ -295,7 +295,7 @@ class FileRecorder:
 
     def load_validated_spec(self, run_id: str) -> GraphSpec:
         """Read a previously-persisted `spec.json` for `run_id` and parse it."""
-        _validate_run_id(run_id)
+        validate_run_id(run_id)
         spec_path = self._root / run_id / "spec.json"
         if not spec_path.exists():
             raise FileNotFoundError(
@@ -323,7 +323,7 @@ class FileRecorder:
         """
 
         chain_id = result.chain_id
-        _validate_run_id(chain_id)
+        validate_run_id(chain_id)
 
         effective_overwrite = self._overwrite if overwrite is None else overwrite
         directory = self._root / chain_id
@@ -354,7 +354,7 @@ class FileRecorder:
 
     def load_chain(self, chain_id: str) -> dict[str, Any]:
         """Read a previously-persisted `chain.json` for `chain_id`."""
-        _validate_run_id(chain_id)
+        validate_run_id(chain_id)
         chain_path = self._root / chain_id / "chain.json"
         if not chain_path.exists():
             raise FileNotFoundError(
@@ -363,15 +363,15 @@ class FileRecorder:
         return json.loads(chain_path.read_text(encoding="utf-8"))
 
     def exists(self, run_id: str) -> bool:
-        _validate_run_id(run_id)
+        validate_run_id(run_id)
         return (self._root / run_id).is_dir()
 
     def run_dir(self, run_id: str) -> Path:
-        _validate_run_id(run_id)
-        return self._root / run_id
+        validate_run_id(run_id)
+        return self._contained(self._root / run_id, run_id)
 
     def load_output(self, run_id: str) -> dict[str, Any]:
-        _validate_run_id(run_id)
+        validate_run_id(run_id)
         output_path = self._root / run_id / "output.json"
         if not output_path.exists():
             raise FileNotFoundError(
@@ -380,10 +380,22 @@ class FileRecorder:
         return json.loads(output_path.read_text(encoding="utf-8"))
 
     def artifact_path(self, run_id: str, name: str) -> Path:
-        _validate_run_id(run_id)
-        if not name or not all(ch in _SAFE_RUN_ID_CHARS for ch in name):
+        validate_run_id(run_id)
+        name_ok = bool(name) and all(ch in _SAFE_RUN_ID_CHARS for ch in name)
+        if not name_ok or set(name) == {"."}:
             raise ValueError(f"artifact name contains unsafe characters: {name!r}")
-        return self._root / run_id / "artifacts" / name
+        return self._contained(self._root / run_id / "artifacts" / name, run_id)
+
+    def _contained(self, path: Path, run_id: str) -> Path:
+        """Defense in depth: confirm a built path stays under the runs root.
+
+        `validate_run_id` already rejects traversal tokens, so this never fires
+        in practice — it's a backstop so any future charset change can't silently
+        reintroduce an escape.
+        """
+        if not path.resolve().is_relative_to(self._root.resolve()):
+            raise ValueError(f"run_id {run_id!r} resolves outside the runs root")
+        return path
 
     def list_runs(self) -> list[dict[str, Any]]:
         """Summaries of every recorded run directory (id, status, node count).
@@ -404,12 +416,10 @@ class FileRecorder:
             if output_path.exists():
                 try:
                     out = json.loads(output_path.read_text(encoding="utf-8"))
-                    if out.get("ok"):
-                        status = "ok"
-                    elif out.get("error"):
-                        status = "failed"
-                    else:
-                        status = "failed" if out.get("errors") else "ok"
+                    # Trust the persisted `ok` flag (the authoritative field) rather
+                    # than re-inferring from error/errors — the old triple-fallback
+                    # could report "ok" for a record with ok=False and no errors list.
+                    status = "ok" if out.get("ok") else "failed"
                 except (json.JSONDecodeError, OSError):
                     status = "unknown"
             node_count = 0
@@ -477,13 +487,19 @@ class NullRecorder:
         )
 
 
-def _validate_run_id(run_id: str) -> None:
+def validate_run_id(run_id: str) -> None:
     if not run_id:
         raise ValueError("run_id must be non-empty")
     if not all(ch in _SAFE_RUN_ID_CHARS for ch in run_id):
         raise ValueError(
             f"run_id contains unsafe characters (allowed: letters, digits, '-', '_', '.'): {run_id!r}"
         )
+    # `.` is allowed *inside* an id (e.g. a model tag like "gpt-5.4"), but an id
+    # that is nothing but dots ('.', '..', ...) is a path-traversal token: with no
+    # separator in the charset, `run_dir("..")` would otherwise select the runs
+    # root's parent. Refuse it so a run_id can never escape the root.
+    if set(run_id) == {"."}:
+        raise ValueError(f"run_id may not be a bare dot path segment: {run_id!r}")
 
 
 def _extract_output(result: ExecutionResult) -> dict[str, object]:
@@ -549,6 +565,21 @@ def _render_summary(
     return "\n".join(lines)
 
 
+def _decision_to_dict(decision: IterationDecision) -> dict[str, Any]:
+    """JSON shape for one iteration decision — the chain's persisted memory.
+
+    Used for both per-step and final decisions so the two can't drift.
+    """
+    return {
+        "action": decision.action,
+        "reason": decision.reason,
+        "success_criteria_met": decision.success_criteria_met,
+        "gaps": list(decision.gaps),
+        "next_prompt": decision.next_prompt,
+        "question_to_user": decision.question_to_user,
+    }
+
+
 def _serialize_chain(
     result: IterativeSupervisorResult,
     *,
@@ -558,7 +589,6 @@ def _serialize_chain(
 
     steps_payload: list[dict[str, Any]] = []
     for step in result.steps:
-        decision = step.decision
         steps_payload.append(
             {
                 "iteration": step.iteration,
@@ -573,28 +603,13 @@ def _serialize_chain(
                         else None
                     ),
                 },
-                "decision": {
-                    "action": decision.action,
-                    "reason": decision.reason,
-                    "success_criteria_met": decision.success_criteria_met,
-                    "gaps": list(decision.gaps),
-                    "next_prompt": decision.next_prompt,
-                    "question_to_user": decision.question_to_user,
-                },
+                "decision": _decision_to_dict(step.decision),
             }
         )
 
     final_decision_payload: dict[str, Any] | None = None
     if result.final_decision is not None:
-        fd = result.final_decision
-        final_decision_payload = {
-            "action": fd.action,
-            "reason": fd.reason,
-            "success_criteria_met": fd.success_criteria_met,
-            "gaps": list(fd.gaps),
-            "next_prompt": fd.next_prompt,
-            "question_to_user": fd.question_to_user,
-        }
+        final_decision_payload = _decision_to_dict(result.final_decision)
 
     return {
         "schema_version": CHAIN_SCHEMA_VERSION,

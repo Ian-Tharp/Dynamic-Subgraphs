@@ -1,3 +1,13 @@
+"""LangGraphExecutor — compiles a validated GraphSpec and runs it, one level deep.
+
+The runtime seam that keeps LangGraph behind a stable interface: `compile()` turns a
+validated spec into a transient graph, and `execute()` runs it on a fresh state
+envelope with the host-granted budget, an absolute wall-clock deadline, and a
+per-run `BudgetLedger` (so concurrent `spawn_subgraph` siblings can't overspend).
+Each invocation runs on an isolated daemon thread so an inner `interrupt()` stays
+contained and a hung runner can't block the caller past the deadline.
+"""
+
 from __future__ import annotations
 
 import threading
@@ -7,6 +17,7 @@ from typing import Any, Protocol
 
 from app.models import DynamicRunState, GraphSpec, NodeKind, RunTrace, TraceEvent
 from app.registry import Registry
+from app.runtime.budget_ledger import BudgetLedger
 from app.runtime.runners import NodeRunner
 from app.runtime.state import make_initial_state
 
@@ -139,6 +150,21 @@ class LangGraphExecutor:
         self._runners = runners
         self._checkpointer = checkpointer
         self._strict_runners = strict_runners
+        # Per-graph budget ledgers keyed by run_id, kept OFF the serialized state
+        # (the checkpointer msgpack-serializes state, which a live object breaks) —
+        # the spawn_subgraph runner looks one up by run_id. Populated per execute(),
+        # removed when that graph finishes. Concurrent runs (the API runs jobs on a
+        # thread pool) mutate this map from different threads, so insert/pop are
+        # guarded by a lock; reads (`.get`) are single GIL-atomic ops, and run_ids
+        # are globally unique (JobStore.create rejects collisions), so a live entry
+        # is never overwritten.
+        self._ledgers: dict[str, BudgetLedger] = {}
+        self._ledgers_lock = threading.Lock()
+
+    @property
+    def ledgers(self) -> dict[str, BudgetLedger]:
+        """run_id -> BudgetLedger registry the spawn_subgraph runner reads from."""
+        return self._ledgers
 
     def compile(self, spec: GraphSpec) -> CompiledGraph:
         from app.compiler.build import build_graph
@@ -199,22 +225,32 @@ class LangGraphExecutor:
             "wall_deadline_monotonic": deadline,
             "run_id": run_id,
         }
+        # A fresh budget ledger for this graph, registered by run_id so the
+        # spawn_subgraph runner can reserve against ONE pool across concurrent
+        # siblings (the TOCTOU fix) — kept off the serialized state. A nested child
+        # gets its own ledger from its own execute(); removed when this graph ends.
+        with self._ledgers_lock:
+            self._ledgers[run_id] = BudgetLedger()
         # Only the checkpointer path can be inspected for interrupts (it carries
         # the thread_id); without one there's no persisted state to query.
         inspect_config = config if self._checkpointer is not None else None
         try:
-            state, paused, payloads = _run_graph_isolated(
-                concrete.graph,
-                make_initial_state(inputs=inputs, metadata=metadata),
-                config=config,
-                inspect_config=inspect_config,
-                hard_timeout_s=max(0.0, deadline - time.monotonic()),
+            try:
+                state, paused, payloads = _run_graph_isolated(
+                    concrete.graph,
+                    make_initial_state(inputs=inputs, metadata=metadata),
+                    config=config,
+                    inspect_config=inspect_config,
+                    hard_timeout_s=max(0.0, deadline - time.monotonic()),
+                )
+            except _DeadlineExceeded:
+                return self._timeout_result(concrete, run_id)
+            return self._build_result(
+                concrete, state, run_id, paused=paused, interrupt_payloads=payloads
             )
-        except _DeadlineExceeded:
-            return self._timeout_result(concrete, run_id)
-        return self._build_result(
-            concrete, state, run_id, paused=paused, interrupt_payloads=payloads
-        )
+        finally:
+            with self._ledgers_lock:
+                self._ledgers.pop(run_id, None)
 
     def _timeout_result(
         self, concrete: _LangGraphCompiledGraph, run_id: str

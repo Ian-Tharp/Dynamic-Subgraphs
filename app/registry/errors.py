@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.errors import DynamicSubgraphsError
+
 
 @dataclass
 class RegistryValidationIssue:
@@ -11,7 +13,7 @@ class RegistryValidationIssue:
     field: str | None = None
 
 
-class RegistryValidationError(Exception):
+class RegistryValidationError(DynamicSubgraphsError):
     def __init__(self, issues: list[RegistryValidationIssue]) -> None:
         self.issues = issues
         summary = "; ".join(i.message for i in issues[:5])

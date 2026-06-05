@@ -30,6 +30,15 @@ jobs:
         run: uv run pytest -m "not integration"
       - name: Build wheel + sdist
         run: uv build
+      - name: Smoke-test the built wheel in a clean venv
+        # Catch packaging-only breakage (missing package, absent py.typed, extras
+        # typo) BEFORE publishing — CI's identical smoke doesn't run on v* tags.
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/python -m pip install --upgrade pip
+          wheel="$(echo dist/*.whl)"
+          /tmp/smoke/bin/python -m pip install "${wheel}[all]"
+          /tmp/smoke/bin/python -c "import dynamic_subgraphs as d; print('import ok:', sorted(d.__all__))"
       - uses: actions/upload-artifact@v7
         with:
           name: dist

@@ -192,7 +192,7 @@ def _child_spec(graph_id: str, *, nodes, edges, budget=None) -> GraphSpec:
     return GraphSpec(**kwargs)
 
 
-def test_launcher_plans_and_runs_a_child(tmp_path) -> None:
+def test_launcher_plans_and_runs_a_child() -> None:
     from app.runtime.executor import LangGraphExecutor
 
     child = _child_spec(
@@ -387,7 +387,7 @@ def test_launcher_bans_wait_for_event_in_children() -> None:
         launcher("g", run_id="p__sg_w", graph_depth=1, parent_run_id="p", inputs={})
 
 
-def test_launcher_seeds_graph_depth_into_child(tmp_path) -> None:
+def test_launcher_seeds_graph_depth_into_child() -> None:
     from app.runtime.executor import LangGraphExecutor
 
     child = _child_spec(
@@ -747,3 +747,130 @@ def test_planner_advertises_spawn_subgraph_with_guidance() -> None:
     assert NodeKind.SPAWN_SUBGRAPH in planner._executable_kinds
     assert "spawn_subgraph" in planner._system_prompt
     assert "sub_goal" in planner._system_prompt  # params are documented
+
+
+# ---------- concurrent-sibling budget (TOCTOU reserve-and-refund) ----------
+
+
+def _two_llm_child() -> GraphSpec:
+    return _child_spec(
+        "child",
+        nodes=[
+            NodeSpec(
+                id="a",
+                kind=NodeKind.LLM_CALL,
+                outputs=["a"],
+                params={"instruction": "A"},
+            ),
+            NodeSpec(
+                id="b",
+                kind=NodeKind.LLM_CALL,
+                inputs=["a"],
+                outputs=["b"],
+                params={"instruction": "B"},
+            ),
+        ],
+        edges=[
+            EdgeSpec.model_validate({"from": "START", "to": "a"}),
+            EdgeSpec.model_validate({"from": "a", "to": "b"}),
+            EdgeSpec.model_validate({"from": "b", "to": "END"}),
+        ],
+    )
+
+
+def _run_two_spawns(*, max_llm_calls: int, sequential: bool):
+    # Two spawn_subgraph siblings, each child wanting 2 LLM calls. `sequential`
+    # orders them (spawn_a -> spawn_b, distinct supersteps); otherwise both edge
+    # straight off START and LangGraph runs them in ONE superstep (concurrently,
+    # on its thread pool) — the case the TOCTOU is about.
+    from app.registry import validate_graph_spec
+    from app.runtime.executor import LangGraphExecutor
+
+    def child_planner(sub_goal):
+        del sub_goal
+        return _two_llm_child()
+
+    def echo(state, params):
+        del state
+        return {"result": params["instruction"]}
+
+    runners = {NodeKind.LLM_CALL: echo}
+    executor = LangGraphExecutor(runners=runners)
+    runners[NodeKind.SPAWN_SUBGRAPH] = build_spawn_subgraph_runner(
+        make_child_launcher(planner=child_planner, executor=executor),
+        ledger_registry=executor.ledgers,
+    )
+    nodes = [
+        NodeSpec(
+            id="spawn_a",
+            kind=NodeKind.SPAWN_SUBGRAPH,
+            outputs=["rep_a"],
+            params={"sub_goal": "g", "name": "ca"},
+        ),
+        NodeSpec(
+            id="spawn_b",
+            kind=NodeKind.SPAWN_SUBGRAPH,
+            outputs=["rep_b"],
+            params={"sub_goal": "g", "name": "cb"},
+        ),
+    ]
+    if sequential:
+        raw_edges = [
+            {"from": "START", "to": "spawn_a"},
+            {"from": "spawn_a", "to": "spawn_b"},
+            {"from": "spawn_b", "to": "END"},
+        ]
+    else:
+        raw_edges = [
+            {"from": "START", "to": "spawn_a"},
+            {"from": "START", "to": "spawn_b"},
+            {"from": "spawn_a", "to": "END"},
+            {"from": "spawn_b", "to": "END"},
+        ]
+    parent = _child_spec(
+        "parent",
+        nodes=nodes,
+        edges=[EdgeSpec.model_validate(e) for e in raw_edges],
+        budget=GraphBudget(max_llm_calls=max_llm_calls),
+    )
+    return executor.execute(executor.compile(validate_graph_spec(parent)), run_id="p")
+
+
+@pytest.mark.parametrize("trial", range(5))
+def test_concurrent_sibling_spawns_cannot_overspend_the_budget(trial: int) -> None:
+    # The regression. Two spawn_subgraph siblings run in ONE superstep; each child
+    # wants 2 LLM calls but the parent budget is only 2. Without the shared
+    # BudgetLedger both read the same pre-merge counters, each clamp their child to
+    # the full remaining (2), and jointly spend 4. With it, the lock serializes the
+    # reservations: the first sibling reserves the whole remaining and the second is
+    # starved to zero and fails closed (allocation is first-come-greedy). Run a few
+    # trials so a lock regression can't hide behind a single lucky interleaving.
+    del trial
+    result = _run_two_spawns(max_llm_calls=2, sequential=False)
+    counters = result.state["counters"]
+    values = result.state.get("values", {}) or {}
+
+    # EXACTLY the budget is spent — never 4 (the over-spend this fixes) and never
+    # 0/1 (the winner runs its 2-call child in full). A `<= 2` assertion would also
+    # pass with the lock removed under common schedules; `== 2` is what pins the fix.
+    assert counters["llm_calls_consumed"] == 2
+    # One child completed and produced its report; the other was refused outright.
+    produced = [key for key in ("rep_a", "rep_b") if key in values]
+    assert len(produced) == 1
+    # The starved sibling failed CLOSED (recorded an error), not silently — fail-
+    # closed under contention is the whole governance contract here.
+    assert result.ok is False
+    assert result.state.get("errors")
+
+
+def test_sequential_spawns_share_the_budget_across_supersteps() -> None:
+    # Two spawns in series: the second runs a later superstep, so counters have
+    # absorbed the first's spend. The ledger's baseline reconciliation must let the
+    # second see the real remaining and run — both 2-call children fit a budget of 4.
+    result = _run_two_spawns(max_llm_calls=4, sequential=True)
+
+    assert result.ok is True
+    assert result.state["counters"]["llm_calls_consumed"] == 4  # 2 + 2
+    # Both children completed — neither is starved when the budget genuinely fits.
+    values = result.state.get("values", {}) or {}
+    assert "rep_a" in values and "rep_b" in values

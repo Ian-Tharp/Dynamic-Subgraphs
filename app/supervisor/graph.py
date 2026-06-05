@@ -26,14 +26,17 @@ from app.recording import Recorder
 from app.registry import RegistryValidationError, validate_graph_spec
 from app.runtime import GraphExecutor
 from app.supervisor.planner import Planner
-from app.supervisor.state import SupervisorState
+from app.supervisor.responses import render_interrupt_label, render_value_summary
+from app.supervisor.state import RunStatus, SupervisorState
 
-_PLAN_FAILED = "plan_failed"
-_VALIDATION_FAILED = "validation_failed"
-_COMPILE_FAILED = "compile_failed"
+# Local aliases sourced from the canonical RunStatus vocabulary (state.py), so the
+# status strings have one definition.
+_PLAN_FAILED = RunStatus.PLAN_FAILED
+_VALIDATION_FAILED = RunStatus.VALIDATION_FAILED
+_COMPILE_FAILED = RunStatus.COMPILE_FAILED
 # Transient: validation failed but a repair attempt remains. Always routes
 # straight back to `plan`, so it is never a final status.
-_PLAN_REPAIR_NEEDED = "plan_repair_needed"
+_PLAN_REPAIR_NEEDED = RunStatus.PLAN_REPAIR_NEEDED
 
 # Validation issues a re-plan can't fix (a code/schema bug, not a plan the
 # planner can correct) — never retry when *all* issues are of these kinds.
@@ -146,7 +149,7 @@ def _route_after_execute(state: SupervisorState) -> str:
 def _make_receive_node():
     def receive(state: SupervisorState) -> SupervisorState:
         del state
-        return {"status": "pending"}
+        return {"status": RunStatus.PENDING}
 
     return receive
 
@@ -185,7 +188,7 @@ def _make_plan_node(planner: Planner, policy: ExecutionPolicy | None = None):
         return {
             "spec": spec,
             "plan_attempts": attempt,
-            "status": "pending",
+            "status": RunStatus.PENDING,
             "last_validation_issues": None,
         }
 
@@ -251,11 +254,11 @@ def _make_execute_node(executor: GraphExecutor):
 
         result = executor.execute(compiled, run_id=state["run_id"])
         if result.paused:
-            status = "paused"
+            status: str = RunStatus.PAUSED
         elif result.ok:
-            status = "ok"
+            status = RunStatus.OK
         else:
-            status = "execution_failed"
+            status = RunStatus.EXECUTION_FAILED
         return {"result": result, "status": status}
 
     return execute
@@ -274,7 +277,7 @@ def _make_record_node(recorder: Recorder):
             )
         except Exception as exc:
             return {
-                "status": "record_failed",
+                "status": RunStatus.RECORD_FAILED,
                 "errors": [
                     {
                         "stage": "record",
@@ -292,20 +295,13 @@ def _make_respond_node():
     def respond(state: SupervisorState) -> SupervisorState:
         status = state.get("status", "unknown")
 
-        if status == "ok":
+        if status == RunStatus.OK:
             values = state["result"].state.get("values", {})
-            preview_keys = sorted(values.keys())[:6]
             response = (
-                f"Run completed successfully. Produced {len(values)} output value(s): "
-                f"{', '.join(preview_keys) if preview_keys else '(none)'}."
+                f"Run completed successfully. Produced {render_value_summary(values)}."
             )
-        elif status == "paused":
-            payloads = state["result"].interrupt_payloads
-            event_types = [
-                str(p.get("event_type")) if isinstance(p, dict) else str(p)
-                for p in payloads
-            ]
-            label = ", ".join(event_types) if event_types else "an unspecified event"
+        elif status == RunStatus.PAUSED:
+            label = render_interrupt_label(state["result"].interrupt_payloads)
             response = (
                 f"Run paused waiting for {label}. "
                 f"Call supervisor.resume(run_id, event=...) to continue."
@@ -316,10 +312,10 @@ def _make_respond_node():
                 f"Run halted at stage '{last_error.get('stage', '?')}': "
                 f"{last_error.get('message', 'unknown error')}"
             )
-        elif status == "execution_failed":
+        elif status == RunStatus.EXECUTION_FAILED:
             inner_error = state["result"].error or "unknown inner error"
             response = f"Run executed but reported failure: {inner_error}"
-        elif status == "record_failed":
+        elif status == RunStatus.RECORD_FAILED:
             last_error = (state.get("errors") or [{}])[-1]
             response = (
                 "Run completed but could not be persisted: "

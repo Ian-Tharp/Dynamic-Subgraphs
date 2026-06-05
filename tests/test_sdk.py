@@ -427,6 +427,17 @@ def test_capabilities_is_machine_readable_and_complete() -> None:
     assert "lmstudio" in caps["model_constructors"]
     assert "worker" in caps["model_roles"]
 
+    # recording_presets and model_constructors must mirror the real classmethods,
+    # not a hand-maintained literal that silently drifts (the never-drift contract
+    # the other capability keys already keep).
+    from dynamic_subgraphs import Model, Recording
+
+    for preset in caps["recording_presets"]:
+        made = getattr(Recording, preset)()
+        assert isinstance(made, Recording), f"{preset} is not a Recording preset"
+    for ctor in caps["model_constructors"]:
+        assert callable(getattr(Model, ctor)), f"{ctor} is not a Model constructor"
+
     # node_kinds must mirror the registry's NodeKind enum exactly, so the
     # agent-facing surface (and docs that read from it) can't drift from the
     # vocabulary the compiler actually accepts.

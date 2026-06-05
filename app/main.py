@@ -36,72 +36,11 @@ except (AttributeError, OSError):
     pass
 
 from app.assembly import RunConfig, build_supervisor
-from app.models import (
-    GraphSpec,
-    NodeKind,
-    NodeSpec,
-)
-from app.models.graph_spec import EdgeSpec, GraphBudget
 from app.recording import FileRecorder
 from app.supervisor import SupervisorResult
 
 DEFAULT_LLM_MODEL = "gpt-5.4-nano"
 DEFAULT_PROMPT = "Compare two evidence sources and recommend one."
-
-
-def build_demo_spec() -> GraphSpec:
-    """Static fallback spec used when --llm is not passed."""
-
-    nodes = [
-        NodeSpec(
-            id="gather_left",
-            kind=NodeKind.LLM_CALL,
-            outputs=["left_evidence"],
-            params={"instruction": "summarize source A"},
-        ),
-        NodeSpec(
-            id="gather_right",
-            kind=NodeKind.LLM_CALL,
-            outputs=["right_evidence"],
-            params={"instruction": "summarize source B"},
-        ),
-        NodeSpec(
-            id="join",
-            kind=NodeKind.REDUCE,
-            inputs=["left_evidence", "right_evidence"],
-            outputs=["combined_evidence"],
-            params={
-                "strategy": "concat",
-                "input_keys": ["left_evidence", "right_evidence"],
-                "output_key": "combined_evidence",
-            },
-        ),
-        NodeSpec(
-            id="synthesize",
-            kind=NodeKind.LLM_CALL,
-            inputs=["combined_evidence"],
-            outputs=["final_answer"],
-            params={"instruction": "produce a recommendation"},
-        ),
-    ]
-
-    edges = [
-        EdgeSpec.model_validate({"from": "START", "to": "gather_left"}),
-        EdgeSpec.model_validate({"from": "START", "to": "gather_right"}),
-        EdgeSpec.model_validate({"from": "gather_left", "to": "join"}),
-        EdgeSpec.model_validate({"from": "gather_right", "to": "join"}),
-        EdgeSpec.model_validate({"from": "join", "to": "synthesize"}),
-        EdgeSpec.model_validate({"from": "synthesize", "to": "END"}),
-    ]
-
-    return GraphSpec(
-        graph_id="demo-research-001",
-        goal="compare two evidence sources and recommend one",
-        rationale="parallel gather then concat then synthesize",
-        budget=GraphBudget(max_nodes=8, max_llm_calls=6),
-        nodes=nodes,
-        edges=edges,
-    )
 
 
 def render_supervisor_result(result: SupervisorResult) -> None:

@@ -8,6 +8,7 @@ it is the seam where per-node events will publish later.
 
 from __future__ import annotations
 
+import contextlib
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -100,6 +101,15 @@ class Job:
             else:
                 self._subscribers.append(q)
         return q
+
+    def unsubscribe(self, q: Queue[dict[str, Any]]) -> None:
+        """Drop a subscriber's queue so a disconnected client can't leak it.
+
+        Idempotent: a queue already removed (by a terminal `clear()`) or never
+        registered (a terminal-at-subscribe job) is silently ignored.
+        """
+        with self._lock, contextlib.suppress(ValueError):
+            self._subscribers.remove(q)
 
 
 class JobStore:

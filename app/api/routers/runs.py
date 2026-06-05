@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import Iterator
+from queue import Empty
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -18,14 +19,14 @@ from app.api.deps import (
     AppContext,
     get_context,
     require_auth,
+    require_valid_run_id,
     resolve_run_config,
 )
-from app.api.errors import Conflict, NotFound
+from app.api.errors import BadRequest, Conflict, NotFound
 from app.api.jobs import Job, JobState
 from app.api.run_config_store import load_run_config, save_run_config
 from app.api.schemas import ReplayRequest, ResumeRequest, RunRequest
 from app.api.serialize import run_links, run_result_payload, run_status_payload
-from app.recording.recorder import _validate_run_id
 
 router = APIRouter(tags=["runs"])
 
@@ -82,7 +83,7 @@ def create_run(
     )
 
     run_id = body.run_id or _new_run_id()
-    _validate_run_id(run_id)
+    require_valid_run_id(run_id)
     _ensure_unique(ctx, run_id)
 
     job = ctx.jobs.create(run_id, kind="run")
@@ -121,7 +122,7 @@ def list_runs(request: Request) -> dict[str, Any]:
 @router.get("/runs/{run_id}")
 def get_run(request: Request, run_id: str) -> dict[str, Any]:
     ctx = get_context(request)
-    _validate_run_id(run_id)
+    require_valid_run_id(run_id)
     job = ctx.jobs.get(run_id)
     if job is not None and job.result is not None:
         return run_status_payload(job.result)
@@ -151,7 +152,7 @@ def get_run(request: Request, run_id: str) -> dict[str, Any]:
 
 
 def _run_file(ctx: AppContext, run_id: str, name: str):
-    _validate_run_id(run_id)
+    require_valid_run_id(run_id)
     if not ctx.recorder.exists(run_id):
         raise NotFound(f"No run {run_id!r}")
     path = ctx.recorder.run_dir(run_id) / name
@@ -198,7 +199,7 @@ def get_summary(request: Request, run_id: str) -> Response:
 @router.get("/runs/{run_id}/artifacts")
 def list_artifacts(request: Request, run_id: str) -> dict[str, Any]:
     ctx = get_context(request)
-    _validate_run_id(run_id)
+    require_valid_run_id(run_id)
     if not ctx.recorder.exists(run_id):
         raise NotFound(f"No run {run_id!r}")
     art_dir = ctx.recorder.run_dir(run_id) / "artifacts"
@@ -209,9 +210,13 @@ def list_artifacts(request: Request, run_id: str) -> dict[str, Any]:
 @router.get("/runs/{run_id}/artifacts/{name}")
 def get_artifact(request: Request, run_id: str, name: str) -> Response:
     ctx = get_context(request)
+    require_valid_run_id(run_id)
     if not ctx.recorder.exists(run_id):
         raise NotFound(f"No run {run_id!r}")
-    path = ctx.recorder.artifact_path(run_id, name)  # validates name
+    try:
+        path = ctx.recorder.artifact_path(run_id, name)  # validates the name
+    except ValueError as exc:
+        raise BadRequest(str(exc)) from exc
     if not path.exists():
         raise NotFound(f"No artifact {name!r} for run {run_id!r}")
     return FileResponse(path)
@@ -225,7 +230,7 @@ def resume_run(
     _: None = Depends(require_auth),
 ) -> Response:
     ctx = get_context(request)
-    _validate_run_id(run_id)
+    require_valid_run_id(run_id)
     if not ctx.recorder.exists(run_id):
         raise NotFound(f"No run {run_id!r} to resume")
     persisted = load_run_config(ctx.recorder.run_dir(run_id))
@@ -249,7 +254,7 @@ def replay_run(
     _: None = Depends(require_auth),
 ) -> Response:
     ctx = get_context(request)
-    _validate_run_id(run_id)
+    require_valid_run_id(run_id)
     if not ctx.recorder.exists(run_id):
         raise NotFound(f"No run {run_id!r} to replay")
     persisted = load_run_config(ctx.recorder.run_dir(run_id))
@@ -272,7 +277,7 @@ def _sse(event: str, data: dict[str, Any]) -> str:
 @router.get("/runs/{run_id}/trace/stream")
 def stream_run(request: Request, run_id: str) -> StreamingResponse:
     ctx = get_context(request)
-    _validate_run_id(run_id)
+    require_valid_run_id(run_id)
     job = ctx.jobs.get(run_id)
     if job is None and not ctx.recorder.exists(run_id):
         raise NotFound(f"No run {run_id!r}")
@@ -280,11 +285,22 @@ def stream_run(request: Request, run_id: str) -> StreamingResponse:
     def gen() -> Iterator[str]:
         if job is not None:
             queue = job.subscribe()
-            while True:
-                msg = queue.get(timeout=ctx.settings.max_sync_seconds)
-                if msg["type"] == "__end__":
-                    break
-                yield _sse("status", {"state": msg["state"]})
+            try:
+                while True:
+                    try:
+                        msg = queue.get(timeout=ctx.settings.max_sync_seconds)
+                    except Empty:
+                        # A quiet job must not crash the stream: emit an SSE comment
+                        # keepalive and keep waiting for the terminal __end__.
+                        yield ": keepalive\n\n"
+                        continue
+                    if msg["type"] == "__end__":
+                        break
+                    yield _sse("status", {"state": msg["state"]})
+            finally:
+                # On normal end or client disconnect (GeneratorExit), drop our queue
+                # so _publish doesn't keep filling a queue no one reads.
+                job.unsubscribe(queue)
         # final recorded trace, if present
         trace_path = ctx.recorder.run_dir(run_id) / "trace.jsonl"
         if trace_path.exists():
