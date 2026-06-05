@@ -26,6 +26,7 @@ from app.recording import Recorder
 from app.registry import RegistryValidationError, validate_graph_spec
 from app.runtime import GraphExecutor
 from app.supervisor.planner import Planner
+from app.supervisor.responses import render_interrupt_label, render_value_summary
 from app.supervisor.state import SupervisorState
 
 _PLAN_FAILED = "plan_failed"
@@ -294,18 +295,11 @@ def _make_respond_node():
 
         if status == "ok":
             values = state["result"].state.get("values", {})
-            preview_keys = sorted(values.keys())[:6]
             response = (
-                f"Run completed successfully. Produced {len(values)} output value(s): "
-                f"{', '.join(preview_keys) if preview_keys else '(none)'}."
+                f"Run completed successfully. Produced {render_value_summary(values)}."
             )
         elif status == "paused":
-            payloads = state["result"].interrupt_payloads
-            event_types = [
-                str(p.get("event_type")) if isinstance(p, dict) else str(p)
-                for p in payloads
-            ]
-            label = ", ".join(event_types) if event_types else "an unspecified event"
+            label = render_interrupt_label(state["result"].interrupt_payloads)
             response = (
                 f"Run paused waiting for {label}. "
                 f"Call supervisor.resume(run_id, event=...) to continue."

@@ -23,6 +23,7 @@ from app.supervisor.iteration import (
     build_replan_prompt,
 )
 from app.supervisor.planner import Planner
+from app.supervisor.responses import render_interrupt_label, render_value_summary
 
 
 @dataclass(frozen=True)
@@ -369,25 +370,17 @@ class Supervisor:
 
         if result.paused:
             status = "paused"
-            payloads = result.interrupt_payloads
-            event_types = [
-                str(p.get("event_type")) if isinstance(p, dict) else str(p)
-                for p in payloads
-            ]
-            label = ", ".join(event_types) if event_types else "an unspecified event"
+            label = render_interrupt_label(result.interrupt_payloads)
             response = (
                 f"Replay of {run_id!r} as {effective_new_run_id!r} paused "
                 f"waiting for {label}. "
                 f"Call supervisor.resume(run_id, event=...) to continue."
             )
         elif result.ok:
-            values = result.state.get("values", {})
-            preview_keys = sorted(values.keys())[:6]
             status = "ok"
             response = (
                 f"Replayed {run_id!r} as {effective_new_run_id!r}. "
-                f"Produced {len(values)} output value(s): "
-                f"{', '.join(preview_keys) if preview_keys else '(none)'}."
+                f"Produced {render_value_summary(result.state.get('values', {}))}."
             )
         else:
             status = "execution_failed"
@@ -510,24 +503,16 @@ class Supervisor:
 
         if result.paused:
             status = "paused"
-            payloads = result.interrupt_payloads
-            event_types = [
-                str(p.get("event_type")) if isinstance(p, dict) else str(p)
-                for p in payloads
-            ]
-            label = ", ".join(event_types) if event_types else "an unspecified event"
+            label = render_interrupt_label(result.interrupt_payloads)
             response = (
                 f"Run paused again waiting for {label}. "
                 f"Call supervisor.resume(run_id, event=...) to continue."
             )
         elif result.ok:
             status = "ok"
-            values = result.state.get("values", {})
-            preview_keys = sorted(values.keys())[:6]
             response = (
                 f"Run resumed and completed. "
-                f"Produced {len(values)} output value(s): "
-                f"{', '.join(preview_keys) if preview_keys else '(none)'}."
+                f"Produced {render_value_summary(result.state.get('values', {}))}."
             )
         else:
             status = "execution_failed"
