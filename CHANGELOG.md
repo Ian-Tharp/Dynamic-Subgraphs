@@ -7,6 +7,14 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
 
 ## [Unreleased]
 
+### Added
+- `EngineConfig(planner_guidance=...)` — optional domain steering appended to the
+  planner's system prompt, with the GraphSpec contract preserved. A safe way to
+  bias planning (e.g. "prefer `parallel_map` over deep recursion") without owning
+  the whole prompt. Full-prompt replacement remains on the internal
+  `LLMPlanner(system_prompt=...)` hook; a unified `PromptOverrides` surface (incl.
+  the eval rubric) is a planned follow-up.
+
 ## [0.2.0] — 2026-06-04
 
 The headline of this release is **governance that's actually enforced**: the

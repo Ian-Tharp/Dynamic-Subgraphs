@@ -156,6 +156,7 @@ def _build_planner(
     *,
     model_providers: ProviderRegistry,
     chat_callbacks: list[Any] | None = None,
+    planner_guidance: str | None = None,
 ) -> Planner:
     if config.planner == "llm":
         ref = _attach_callbacks(config.planner_ref, chat_callbacks)
@@ -163,6 +164,7 @@ def _build_planner(
         structured = provider.build_structured_output(ref, GraphSpec)
         return LLMPlanner(
             structured,
+            guidance=planner_guidance,
             executable_reduce_strategies=_LLM_REDUCE_STRATEGIES,
         )
     from app.main import build_demo_spec
@@ -220,6 +222,7 @@ def build_supervisor(
     chat_callbacks: list[Any] | None = None,
     policy: ExecutionPolicy | None = None,
     max_plan_attempts: int = 1,
+    planner_guidance: str | None = None,
 ) -> Supervisor:
     """Construct a Supervisor wired for `config`.
 
@@ -239,7 +242,10 @@ def build_supervisor(
     runs_dir = str(getattr(recorder, "root_dir", "runs"))
     providers = model_providers or default_model_providers()
     planner = _build_planner(
-        config, model_providers=providers, chat_callbacks=chat_callbacks
+        config,
+        model_providers=providers,
+        chat_callbacks=chat_callbacks,
+        planner_guidance=planner_guidance,
     )
     runners = _build_runners(
         config,
