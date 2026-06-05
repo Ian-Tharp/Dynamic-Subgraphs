@@ -21,6 +21,14 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
   not yet wired into the engine — recorder persistence (`eval.json`) and
   `EngineConfig.eval_gate` land in the following slices.
 
+### Fixed
+- `parallel_map` fan-out is now debited against the host `max_llm_calls` budget at
+  dispatch and halts fail-closed (`LlmCallBudgetExceeded`) when a within-width-cap
+  fan-out would overrun the granted LLM-call budget. Previously the fan-out *width*
+  was capped (`max_fanout`) but per-worker LLM spend was only counted after the
+  fact, so a wide fan-out of `llm_call` workers could exceed `max_llm_calls`.
+  `tool_call` fan-outs are unaffected (they spend no LLM calls).
+
 ## [0.2.0] — 2026-06-04
 
 The headline of this release is **governance that's actually enforced**: the

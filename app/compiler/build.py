@@ -147,13 +147,18 @@ def _add_parallel_map(
     worker_id = parallel_map_worker_name(node.id)
     join_id = parallel_map_join_name(node.id)
 
-    graph.add_node(
-        node.id,
-        make_parallel_map_dispatcher(node, worker_id=worker_id, join_id=join_id),
-    )
     child_definition = registry.get_definition(child_kind)
     child_counts_as_llm_call = bool(
         child_definition and child_definition.counts_as_llm_call
+    )
+    graph.add_node(
+        node.id,
+        make_parallel_map_dispatcher(
+            node,
+            worker_id=worker_id,
+            join_id=join_id,
+            child_counts_as_llm_call=child_counts_as_llm_call,
+        ),
     )
     graph.add_node(
         worker_id,
