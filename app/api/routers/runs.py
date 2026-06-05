@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import Iterator
+from queue import Empty
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -284,11 +285,22 @@ def stream_run(request: Request, run_id: str) -> StreamingResponse:
     def gen() -> Iterator[str]:
         if job is not None:
             queue = job.subscribe()
-            while True:
-                msg = queue.get(timeout=ctx.settings.max_sync_seconds)
-                if msg["type"] == "__end__":
-                    break
-                yield _sse("status", {"state": msg["state"]})
+            try:
+                while True:
+                    try:
+                        msg = queue.get(timeout=ctx.settings.max_sync_seconds)
+                    except Empty:
+                        # A quiet job must not crash the stream: emit an SSE comment
+                        # keepalive and keep waiting for the terminal __end__.
+                        yield ": keepalive\n\n"
+                        continue
+                    if msg["type"] == "__end__":
+                        break
+                    yield _sse("status", {"state": msg["state"]})
+            finally:
+                # On normal end or client disconnect (GeneratorExit), drop our queue
+                # so _publish doesn't keep filling a queue no one reads.
+                job.unsubscribe(queue)
         # final recorded trace, if present
         trace_path = ctx.recorder.run_dir(run_id) / "trace.jsonl"
         if trace_path.exists():
