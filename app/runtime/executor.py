@@ -1,3 +1,13 @@
+"""LangGraphExecutor — compiles a validated GraphSpec and runs it, one level deep.
+
+The runtime seam that keeps LangGraph behind a stable interface: `compile()` turns a
+validated spec into a transient graph, and `execute()` runs it on a fresh state
+envelope with the host-granted budget, an absolute wall-clock deadline, and a
+per-run `BudgetLedger` (so concurrent `spawn_subgraph` siblings can't overspend).
+Each invocation runs on an isolated daemon thread so an inner `interrupt()` stays
+contained and a hung runner can't block the caller past the deadline.
+"""
+
 from __future__ import annotations
 
 import threading
