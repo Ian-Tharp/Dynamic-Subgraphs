@@ -20,7 +20,7 @@ from app.supervisor.llm_planner import (
     PlannerError,
     build_openai_planner,
 )
-from app.supervisor.planner import Planner, StaticPlanner
+from app.supervisor.planner import Planner, StaticPlanner, build_demo_spec
 from app.supervisor.state import SupervisorState
 from app.supervisor.supervisor import Supervisor, SupervisorResult
 
@@ -41,6 +41,7 @@ __all__ = [
     "Supervisor",
     "SupervisorResult",
     "SupervisorState",
+    "build_demo_spec",
     "build_openai_iteration_decider",
     "build_openai_planner",
     "build_provider_iteration_decider",

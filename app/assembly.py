@@ -37,6 +37,7 @@ from app.supervisor import (
     Planner,
     StaticPlanner,
     Supervisor,
+    build_demo_spec,
 )
 
 _LLM_REDUCE_STRATEGIES = {"concat", "merge_dict", "llm_summarize"}
@@ -166,8 +167,6 @@ def _build_planner(
             guidance=planner_guidance,
             executable_reduce_strategies=_LLM_REDUCE_STRATEGIES,
         )
-    from app.main import build_demo_spec
-
     return StaticPlanner(build_demo_spec())
 
 
