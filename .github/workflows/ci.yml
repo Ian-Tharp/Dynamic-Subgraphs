@@ -42,8 +42,8 @@ jobs:
         run: uv run ruff format --check .
       - name: Ruff lint
         run: uv run ruff check .
-      - name: Mypy (public package strict + governance core)
-        run: uv run mypy dynamic_subgraphs app/policy.py
+      - name: Mypy (strict — public package + governance, models, registry)
+        run: uv run mypy dynamic_subgraphs app/policy.py app/models app/registry
       - name: Tests
         # The 6 integration tests auto-skip without DS_RUN_INTEGRATION/keys,
         # so no secrets are referenced anywhere in this workflow.

@@ -189,7 +189,7 @@ class Registry:
         if definition.counts_as_llm_call:
             return True
         if node.kind == NodeKind.REDUCE:
-            return node.params.get("strategy", "concat") == "llm_summarize"
+            return bool(node.params.get("strategy", "concat") == "llm_summarize")
         return False
 
     def count_llm_calls(self, nodes: list[NodeSpec]) -> int:

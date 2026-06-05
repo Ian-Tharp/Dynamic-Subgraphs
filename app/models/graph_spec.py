@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 from app.models.node_kinds import NodeKind
 
-GRAPH_SPEC_SCHEMA_VERSION = 1
+GRAPH_SPEC_SCHEMA_VERSION: Literal[1] = 1
 SPECIAL_NODE_START = "START"
 SPECIAL_NODE_END = "END"
 
