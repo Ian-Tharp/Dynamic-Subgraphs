@@ -17,6 +17,10 @@ if TYPE_CHECKING:
 IterationAction = Literal["stop", "replan", "ask_user", "fail"]
 _VALID_ACTIONS = {"stop", "replan", "ask_user", "fail"}
 
+# Default character budget for rendering a run's values into a judge/replan prompt
+# (shared by LlmIterationDecider and the openai/provider factory signatures).
+_DEFAULT_VALUE_RENDER_LIMIT = 4000
+
 
 @dataclass(frozen=True)
 class IterationDecision:
@@ -308,7 +312,7 @@ class LlmIterationDecider:
         success_criteria: str | None = None,
         fallback: IterationDecider | None = None,
         judge_failed_runs: bool = False,
-        value_render_limit: int = 4000,
+        value_render_limit: int = _DEFAULT_VALUE_RENDER_LIMIT,
     ) -> None:
         self._model = structured_model
         self._success_criteria = success_criteria
@@ -450,7 +454,7 @@ def build_openai_iteration_decider(
     temperature: float | None = None,
     fallback: IterationDecider | None = None,
     judge_failed_runs: bool = False,
-    value_render_limit: int = 4000,
+    value_render_limit: int = _DEFAULT_VALUE_RENDER_LIMIT,
 ) -> LlmIterationDecider:
     """Convenience factory: an `LlmIterationDecider` backed by ChatOpenAI.
 
@@ -482,7 +486,7 @@ def build_provider_iteration_decider(
     success_criteria: str | None = None,
     fallback: IterationDecider | None = None,
     judge_failed_runs: bool = False,
-    value_render_limit: int = 4000,
+    value_render_limit: int = _DEFAULT_VALUE_RENDER_LIMIT,
 ) -> LlmIterationDecider:
     """Build an LLM judge from a registered model provider."""
 
