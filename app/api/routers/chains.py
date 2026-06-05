@@ -10,13 +10,13 @@ from app.api.deps import (
     AppContext,
     get_context,
     require_auth,
+    require_valid_run_id,
     resolve_chain_decider,
     resolve_run_config,
 )
 from app.api.errors import Conflict, NotFound
 from app.api.jobs import Job, JobState
 from app.api.schemas import ChainRequest
-from app.recording.recorder import _validate_run_id
 
 router = APIRouter(tags=["chains"])
 
@@ -112,7 +112,7 @@ def create_chain(
         judge_failed_runs=body.judge_failed_runs,
     )
     run_id = body.run_id or f"chain-{__import__('uuid').uuid4().hex[:12]}"
-    _validate_run_id(run_id)
+    require_valid_run_id(run_id)
     if ctx.jobs.get(run_id) is not None or ctx.recorder.exists(run_id):
         raise Conflict(f"chain id already exists: {run_id!r}")
 
@@ -160,7 +160,7 @@ def create_chain(
 @router.get("/chains/{chain_id}")
 def get_chain(request: Request, chain_id: str) -> dict[str, Any]:
     ctx = get_context(request)
-    _validate_run_id(chain_id)
+    require_valid_run_id(chain_id)
     job = ctx.jobs.get(chain_id)
     if job is not None and job.result is not None:
         return _chain_payload(job.result)

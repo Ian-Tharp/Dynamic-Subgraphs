@@ -264,7 +264,7 @@ class FileRecorder:
         overwrite: bool | None = None,
     ) -> RunRecord:
         run_id = result.trace.run_id
-        _validate_run_id(run_id)
+        validate_run_id(run_id)
 
         effective_overwrite = self._overwrite if overwrite is None else overwrite
 
@@ -295,7 +295,7 @@ class FileRecorder:
 
     def load_validated_spec(self, run_id: str) -> GraphSpec:
         """Read a previously-persisted `spec.json` for `run_id` and parse it."""
-        _validate_run_id(run_id)
+        validate_run_id(run_id)
         spec_path = self._root / run_id / "spec.json"
         if not spec_path.exists():
             raise FileNotFoundError(
@@ -323,7 +323,7 @@ class FileRecorder:
         """
 
         chain_id = result.chain_id
-        _validate_run_id(chain_id)
+        validate_run_id(chain_id)
 
         effective_overwrite = self._overwrite if overwrite is None else overwrite
         directory = self._root / chain_id
@@ -354,7 +354,7 @@ class FileRecorder:
 
     def load_chain(self, chain_id: str) -> dict[str, Any]:
         """Read a previously-persisted `chain.json` for `chain_id`."""
-        _validate_run_id(chain_id)
+        validate_run_id(chain_id)
         chain_path = self._root / chain_id / "chain.json"
         if not chain_path.exists():
             raise FileNotFoundError(
@@ -363,15 +363,15 @@ class FileRecorder:
         return json.loads(chain_path.read_text(encoding="utf-8"))
 
     def exists(self, run_id: str) -> bool:
-        _validate_run_id(run_id)
+        validate_run_id(run_id)
         return (self._root / run_id).is_dir()
 
     def run_dir(self, run_id: str) -> Path:
-        _validate_run_id(run_id)
+        validate_run_id(run_id)
         return self._contained(self._root / run_id, run_id)
 
     def load_output(self, run_id: str) -> dict[str, Any]:
-        _validate_run_id(run_id)
+        validate_run_id(run_id)
         output_path = self._root / run_id / "output.json"
         if not output_path.exists():
             raise FileNotFoundError(
@@ -380,7 +380,7 @@ class FileRecorder:
         return json.loads(output_path.read_text(encoding="utf-8"))
 
     def artifact_path(self, run_id: str, name: str) -> Path:
-        _validate_run_id(run_id)
+        validate_run_id(run_id)
         name_ok = bool(name) and all(ch in _SAFE_RUN_ID_CHARS for ch in name)
         if not name_ok or set(name) == {"."}:
             raise ValueError(f"artifact name contains unsafe characters: {name!r}")
@@ -389,7 +389,7 @@ class FileRecorder:
     def _contained(self, path: Path, run_id: str) -> Path:
         """Defense in depth: confirm a built path stays under the runs root.
 
-        `_validate_run_id` already rejects traversal tokens, so this never fires
+        `validate_run_id` already rejects traversal tokens, so this never fires
         in practice — it's a backstop so any future charset change can't silently
         reintroduce an escape.
         """
@@ -487,7 +487,7 @@ class NullRecorder:
         )
 
 
-def _validate_run_id(run_id: str) -> None:
+def validate_run_id(run_id: str) -> None:
     if not run_id:
         raise ValueError("run_id must be non-empty")
     if not all(ch in _SAFE_RUN_ID_CHARS for ch in run_id):
