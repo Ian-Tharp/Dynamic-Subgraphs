@@ -7,6 +7,29 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-06-05
+
+This release closes the concurrent-sibling `spawn_subgraph` budget TOCTOU and lands a
+broad **maintainability & professionalism pass**: documentation reconciliation, a single
+source of truth for the run-status vocabulary, a common error root, governance test
+hardening, and HTTP-edge hardening. The deterministic eval scorer is now reachable from
+the top-level facade.
+
+### Upgrade notes (behavior changes since 0.3.0)
+- **`DeterministicEvalGate` is now importable from the top level** —
+  `from dynamic_subgraphs import DeterministicEvalGate, build_deterministic_eval_gate`
+  (previously only via `dynamic_subgraphs.eval`). Still off by default.
+- **The optional HTTP API (`api` extra) is stricter.** A request `prompt` is now bounded
+  (`max_length`; a `422` over the limit); a malformed `run_id` returns **400** (was an
+  unhandled `500`); run ids that are bare dot segments (`.` / `..`) are rejected; and the
+  served OpenAPI `version` tracks the installed package version (was hardcoded `1.0.0`).
+  Typical clients are unaffected.
+
+### Added
+- `DeterministicEvalGate` and `build_deterministic_eval_gate` are re-exported from the
+  package facade (`dynamic_subgraphs.__all__`), so the whole eval surface is reachable
+  from one import.
+
 ### Fixed
 - Closed the concurrent-sibling `spawn_subgraph` budget TOCTOU (the deferred 0.2.0
   known limitation): two spawns scheduled in one superstep no longer each read the
@@ -16,6 +39,27 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
   budget — fail-closed, never overspending. Allocation is first-come-greedy under
   contention (the loser fails closed); sequential spawns share the budget across
   supersteps.
+- API: a malformed `run_id` returns `400` instead of an unhandled `500`; the run-id
+  guard refuses path-traversal dot segments; the SSE trace stream no longer crashes on a
+  quiet job (`queue.Empty`) or leaks a subscriber queue when a client disconnects.
+- The release workflow import-smokes the built wheel in a clean venv before publishing.
+- Governance test coverage: the wall-clock timeout and the concurrent-spawn budget guard
+  now have behavioral tests that pin the real contract (the prior assertions were too
+  weak to catch their own regression).
+
+### Changed
+- The API derives its OpenAPI `version` from package metadata and uses a `lifespan`
+  handler instead of the deprecated `on_event` shutdown hook.
+- Internal hardening (no public-API change): the run-status vocabulary is a single
+  `RunStatus` enum; the engine's errors share a `DynamicSubgraphsError` root (stdlib
+  bases preserved); `app.policy` is type-checked strictly via one pyproject-owned mypy
+  scope; the shared response rendering, `parallel_map` output key, and recorder decision
+  serializer are de-duplicated; best-effort recorder swallows now log a breadcrumb.
+
+### Documentation
+- Reconciled `ARCHITECTURE.md` (now documents the governance + eval layers), the docs
+  index (lists only shipped docs), `CONTRIBUTING.md` (branch off `develop`), and several
+  stale module headers and docstrings that predated their current implementations.
 
 ## [0.3.0] — 2026-06-05
 
