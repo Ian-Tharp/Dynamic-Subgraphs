@@ -2,20 +2,19 @@
 
 ## Canonical
 
-- [`dynamic-graphs-canonical-design-v1.md`](./dynamic-graphs-canonical-design-v1.md) — current source of truth for the project design.
+- [`dynamic-graphs-canonical-design-v1.md`](./dynamic-graphs-canonical-design-v1.md) — source of truth for the project design.
 
-## Source drafts
+## Using the SDK
 
-- [`dynamic-graphs-design.md`](./dynamic-graphs-design.md) — earlier architecture-heavy draft.
-- [`dynamic-graphs-design-claude.md`](./dynamic-graphs-design-claude.md) — earlier implementation-heavy draft with comparison appendix.
+- [`recipes.md`](./recipes.md) — task-oriented recipes (policy, plan-repair, recording, per-role models) with tested-model and latency tables.
+- [`api-stability.md`](./api-stability.md) — the public-API definition and the project's change/deprecation policy.
+- [`api.md`](./api.md) — the optional HTTP surface over the supervisor.
 
-## Implementation notes
+## Evaluation
 
-- [`iterative-supervisor.md`](./iterative-supervisor.md) - bounded adaptive loop and strict runner mode.
-- [api.md](./api.md) — HTTP surface over the supervisor.
-- [`sdk-next-steps.md`](./sdk-next-steps.md) - SDK packaging and CORE integration follow-up plan.
+- [`evals/model-comparison-2026-06.md`](./evals/model-comparison-2026-06.md) — a gpt-5.4-nano vs claude-haiku-4-5 comparison on the same plans.
 
 ## How to read this repo
 
-Start with the canonical design.  
-Use the older drafts only when you want lineage, discarded alternatives, or the reasoning behind v1 decisions.
+Start with the canonical design for the model behind everything, then `recipes.md`
+for how to drive the SDK and `api-stability.md` for what is and isn't public.
