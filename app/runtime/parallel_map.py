@@ -67,8 +67,14 @@ def make_parallel_map_dispatcher(
     *,
     worker_id: str,
     join_id: str,
+    child_counts_as_llm_call: bool = False,
 ) -> Callable[[DynamicRunState], Command]:
-    """Build the LangGraph node function for the parallel_map dispatcher."""
+    """Build the LangGraph node function for the parallel_map dispatcher.
+
+    `child_counts_as_llm_call` lets the dispatcher debit the fan-out against the
+    host `max_llm_calls` budget at dispatch (fail-closed) when each worker spends
+    an LLM call — the width cap alone (`max_fanout`) does not bound LLM spend.
+    """
 
     over_key = node.params["over"]
     output_key = node.outputs[0] if node.outputs else f"{node.id}_results"
@@ -139,6 +145,35 @@ def make_parallel_map_dispatcher(
                     f"max_fanout {max_fanout}"
                 ),
             )
+
+        # Host LLM-call budget: a fan-out *within* the width cap can still blow
+        # the graph's max_llm_calls when every worker spends a call. Debit the
+        # fan-out against the *remaining* llm budget here, before any Send, and
+        # halt fail-closed — never dispatch a fan-out that would overrun the
+        # host's granted call budget. Only llm-call children are charged;
+        # tool_call fan-outs spend no LLM calls. The budget rides in metadata
+        # (seeded by the executor); absent it (a direct-executor unit test), the
+        # check is skipped, mirroring the max_fanout fallback above.
+        if child_counts_as_llm_call:
+            budget_raw = (state.get("metadata", {}) or {}).get("budget_max_llm_calls")
+            if budget_raw is not None:
+                max_llm_calls = int(budget_raw)
+                consumed = int(
+                    (state.get("counters", {}) or {}).get("llm_calls_consumed", 0)
+                )
+                if consumed + len(items) > max_llm_calls:
+                    return _halt_with_error(
+                        node=node,
+                        start_event=start_event,
+                        started_perf=started_perf,
+                        error_type="LlmCallBudgetExceeded",
+                        error_message=(
+                            f"parallel_map fan-out of {len(items)} llm_call workers "
+                            f"would consume {consumed + len(items)} LLM calls, "
+                            f"exceeding the host max_llm_calls {max_llm_calls} "
+                            f"({consumed} already spent)"
+                        ),
+                    )
 
         base_update: dict[str, Any] = {
             "events": [start_event.model_dump(mode="json")],
