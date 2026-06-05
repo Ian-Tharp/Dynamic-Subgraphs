@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import contextlib
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -25,6 +25,8 @@ from app.supervisor.iteration import (
 from app.supervisor.planner import Planner
 from app.supervisor.responses import render_interrupt_label, render_value_summary
 from app.supervisor.state import RunStatus
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -217,14 +219,18 @@ class Supervisor:
             raise RuntimeError("iterative supervisor exited without a result")
 
         if record_chain and hasattr(self._recorder, "record_chain"):
-            # Intentionally best-effort: a chain that ran shouldn't be
-            # invalidated because persistence failed. The per-iteration
-            # records are already on disk.
-            with contextlib.suppress(Exception):
+            # Intentionally best-effort: a chain that ran shouldn't be invalidated
+            # because persistence failed (the per-iteration records are already on
+            # disk). Log a breadcrumb so a chronically failing recorder is visible.
+            try:
                 self._recorder.record_chain(
                     outcome,
                     original_prompt=prompt,
                     overwrite=True,
+                )
+            except Exception:
+                logger.warning(
+                    "failed to record chain %r", outcome.chain_id, exc_info=True
                 )
 
         return outcome
