@@ -40,7 +40,10 @@ from app.supervisor import (
 )
 
 _LLM_REDUCE_STRATEGIES = {"concat", "merge_dict", "llm_summarize"}
-PlannerMode = Literal["mock", "llm", "openai"]
+# The legacy "openai" alias is normalized to ("llm", provider="openai") at the
+# outer adapters (the API's `resolve_run_config`, the CLI), so RunConfig itself
+# only ever sees the two real planner modes.
+PlannerMode = Literal["mock", "llm"]
 
 
 @dataclass(frozen=True)
@@ -65,16 +68,11 @@ class RunConfig:
     judge_model: ModelRef | None = None
 
     def __post_init__(self) -> None:
-        planner = self.planner
         provider = self.provider.strip().lower()
-        if planner == "openai":
-            planner = "llm"
-            provider = "openai"
-        if planner not in ("mock", "llm"):
-            raise ValueError("RunConfig.planner must be 'mock', 'llm', or 'openai'")
+        if self.planner not in ("mock", "llm"):
+            raise ValueError("RunConfig.planner must be 'mock' or 'llm'")
         if not provider:
             raise ValueError("RunConfig.provider must be non-empty")
-        object.__setattr__(self, "planner", planner)
         object.__setattr__(self, "provider", provider)
 
     @property
