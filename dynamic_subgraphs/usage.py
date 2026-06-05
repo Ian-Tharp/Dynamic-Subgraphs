@@ -1,11 +1,13 @@
-"""Exact per-run token usage — a leaf module both the engine and the eval
-layer can import without a cycle.
+"""Exact per-run token usage — a small leaf module both the engine and the eval
+layer import without a cycle.
 
-`TokenUsage` lived in `engine.py`, but the eval layer (`dynamic_subgraphs.eval`)
-needs it and `engine.py` imports the eval layer (for `EngineConfig.eval_gate`),
-which would be circular. Keeping it here — depending only on LangChain — breaks
-that. `engine.py` re-exports it, so `from dynamic_subgraphs import TokenUsage`
-and `from dynamic_subgraphs.engine import TokenUsage` are unchanged.
+`TokenUsage` is surfaced by `engine.py` (on `RunResult`) and is positioned for
+the eval layer (`dynamic_subgraphs.eval`) to consume as well. Keeping it in its
+own leaf module — depending only on LangChain — means neither `engine.py` nor
+`eval` has to import the other to share it, which keeps the planned
+`EngineConfig.eval_gate` wiring cycle-free when it lands. `engine.py` re-exports
+it, so `from dynamic_subgraphs import TokenUsage` and
+`from dynamic_subgraphs.engine import TokenUsage` are unchanged.
 """
 
 from __future__ import annotations
