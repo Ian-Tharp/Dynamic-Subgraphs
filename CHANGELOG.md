@@ -7,6 +7,23 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-06-05
+
+The headline of this release is the **start of the eval/value layer**: a
+deterministic, token-free run scorer (`DeterministicEvalGate`) that turns a
+completed run into a comparable, queryable `EvalResult`. It also adds **safe
+planner steering** (`EngineConfig.planner_guidance`) and tightens **fan-out
+budget enforcement** so a `parallel_map` can no longer overspend the host's
+LLM-call budget.
+
+### Upgrade notes (behavior changes since 0.2.0)
+- **`parallel_map` fan-out now respects `max_llm_calls`.** A fan-out of `llm_call`
+  workers that would push the run past its granted LLM-call budget now halts
+  fail-closed (`LlmCallBudgetExceeded`) at dispatch — previously only the fan-out
+  *width* (`max_fanout`) was bounded, so a wide fan-out could overspend. Typical
+  plans are unaffected; raise `EngineConfig(policy=ExecutionPolicy(max_llm_calls=...))`
+  if you intend large `llm_call` fan-outs.
+
 ### Added
 - `DeterministicEvalGate` — the structural eval scorer (Slice 7). Grades a
   completed run into a typed `EvalResult` across four deterministic, token-free
