@@ -25,7 +25,7 @@ repos:
         types: [python]
       - id: mypy
         name: mypy (strict — public package + governance, models, registry)
-        entry: uv run mypy dynamic_subgraphs app/policy.py app/models app/registry
+        entry: uv run mypy
         language: system
         pass_filenames: false
         files: ^(dynamic_subgraphs/|app/policy\.py|app/models/|app/registry/)
