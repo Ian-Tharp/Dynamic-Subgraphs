@@ -3,9 +3,11 @@
 Design choices:
 
 - The planner depends on the *abstract* `Runnable` returned by
-  `with_structured_output(GraphSpec)`. The concrete model (ChatOpenAI here)
-  is wired by the `build_openai_planner` factory, so the rest of the system
-  has no direct dependency on langchain-openai.
+  `with_structured_output(GraphSpec)`. In the live engine that Runnable is built
+  provider-neutrally via `provider.build_structured_output(...)` (see
+  `app/assembly.py`); `build_openai_planner` remains a test/convenience factory
+  for an OpenAI-backed planner. Either way the rest of the system has no direct
+  dependency on langchain-openai.
 - Schema-constrained generation does most of the work; we still run the
   GraphSpec through `validate_graph_spec` because Pydantic alone does not
   enforce topology, budget, allowlists, or reachability.
