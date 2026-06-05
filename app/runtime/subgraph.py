@@ -13,14 +13,17 @@ checks as any other graph. Only *composition* goes fractal.
 
 from __future__ import annotations
 
-import contextlib
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from app.errors import DynamicSubgraphsError
 from app.models import NodeKind
 from app.registry.validator import MAX_DEPTH_CEILING, validate_graph_spec
 from app.runtime.budget_ledger import BudgetLedger
 from app.runtime.runners import NodeRunner
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -32,7 +35,7 @@ if TYPE_CHECKING:
     from app.runtime.executor import GraphExecutor
 
 
-class SubgraphError(RuntimeError):
+class SubgraphError(DynamicSubgraphsError, RuntimeError):
     """Base for spawn_subgraph failures — each halts the parent node fail-closed."""
 
 
@@ -296,9 +299,16 @@ def make_child_launcher(
             initial_metadata=child_metadata,
         )
         if recorder is not None:
-            with contextlib.suppress(Exception):
+            # Best-effort: a child that ran shouldn't fail because persistence did.
+            # Log a breadcrumb so a chronically failing recorder (which silently
+            # disables nested-run inspection, the feature this advertises) is visible.
+            try:
                 recorder.record(
                     spec=validated, result=result, prompt=sub_goal, overwrite=True
+                )
+            except Exception:
+                logger.warning(
+                    "failed to record child subgraph run %r", run_id, exc_info=True
                 )
         state = result.state or {}
         return ChildResult(

@@ -1,3 +1,13 @@
+"""LangGraphExecutor — compiles a validated GraphSpec and runs it, one level deep.
+
+The runtime seam that keeps LangGraph behind a stable interface: `compile()` turns a
+validated spec into a transient graph, and `execute()` runs it on a fresh state
+envelope with the host-granted budget, an absolute wall-clock deadline, and a
+per-run `BudgetLedger` (so concurrent `spawn_subgraph` siblings can't overspend).
+Each invocation runs on an isolated daemon thread so an inner `interrupt()` stays
+contained and a hung runner can't block the caller past the deadline.
+"""
+
 from __future__ import annotations
 
 import threading
@@ -142,9 +152,14 @@ class LangGraphExecutor:
         self._strict_runners = strict_runners
         # Per-graph budget ledgers keyed by run_id, kept OFF the serialized state
         # (the checkpointer msgpack-serializes state, which a live object breaks) —
-        # the spawn_subgraph runner looks one up by run_id. Populated per
-        # execute(), removed when that graph finishes.
+        # the spawn_subgraph runner looks one up by run_id. Populated per execute(),
+        # removed when that graph finishes. Concurrent runs (the API runs jobs on a
+        # thread pool) mutate this map from different threads, so insert/pop are
+        # guarded by a lock; reads (`.get`) are single GIL-atomic ops, and run_ids
+        # are globally unique (JobStore.create rejects collisions), so a live entry
+        # is never overwritten.
         self._ledgers: dict[str, BudgetLedger] = {}
+        self._ledgers_lock = threading.Lock()
 
     @property
     def ledgers(self) -> dict[str, BudgetLedger]:
@@ -214,7 +229,8 @@ class LangGraphExecutor:
         # spawn_subgraph runner can reserve against ONE pool across concurrent
         # siblings (the TOCTOU fix) — kept off the serialized state. A nested child
         # gets its own ledger from its own execute(); removed when this graph ends.
-        self._ledgers[run_id] = BudgetLedger()
+        with self._ledgers_lock:
+            self._ledgers[run_id] = BudgetLedger()
         # Only the checkpointer path can be inspected for interrupts (it carries
         # the thread_id); without one there's no persisted state to query.
         inspect_config = config if self._checkpointer is not None else None
@@ -233,7 +249,8 @@ class LangGraphExecutor:
                 concrete, state, run_id, paused=paused, interrupt_payloads=payloads
             )
         finally:
-            self._ledgers.pop(run_id, None)
+            with self._ledgers_lock:
+                self._ledgers.pop(run_id, None)
 
     def _timeout_result(
         self, concrete: _LangGraphCompiledGraph, run_id: str

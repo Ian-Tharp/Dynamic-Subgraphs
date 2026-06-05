@@ -122,6 +122,11 @@ warn_unused_configs = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 no_implicit_optional = true
+# The single source of truth for what gets type-checked: the public package plus
+# the governance/data modules under strict typing. CI, pre-commit, and the local
+# `uv run mypy` all share this set, so strictness can't drift between config and
+# command line.
+files = ["dynamic_subgraphs", "app/policy.py", "app/models", "app/registry"]
 
 [[tool.mypy.overrides]]
 module = "dynamic_subgraphs.*"
@@ -131,14 +136,11 @@ strict = true
 module = ["app.*"]
 disallow_untyped_defs = false
 
-# Incrementally bringing app under strict typing — models + registry are clean.
+# Incrementally bringing app under strict typing — models, registry, and the
+# host-governance module (app.policy) are clean.
 [[tool.mypy.overrides]]
-module = ["app.models.*", "app.registry.*"]
+module = ["app.models.*", "app.registry.*", "app.policy"]
 strict = true
-
-[[tool.mypy.overrides]]
-module = ["tests.*"]
-ignore_errors = true
 
 [tool.coverage.run]
 source = ["dynamic_subgraphs", "app"]

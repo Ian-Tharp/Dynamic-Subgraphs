@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
 from langchain_core.messages import AIMessage
 
 from app.assembly import RunConfig, build_supervisor
@@ -43,16 +44,12 @@ def test_build_supervisor_mock_uses_static_planner(tmp_path: Path) -> None:
     assert isinstance(supervisor._planner, StaticPlanner)
 
 
-def test_run_config_normalizes_legacy_openai_planner() -> None:
-    config = RunConfig(
-        planner="openai",
-        model="gpt-5.4-nano",
-        strict_runners=True,
-    )
-
-    assert config.planner == "llm"
-    assert config.provider == "openai"
-    assert config.model_ref == ModelRef(provider="openai", model="gpt-5.4-nano")
+def test_run_config_rejects_the_legacy_openai_planner_alias() -> None:
+    # The "openai" alias is normalized to ("llm", provider="openai") at the outer
+    # adapters (the API's resolve_run_config, the CLI); RunConfig itself only
+    # accepts the two real modes, so the alias can't drift in two places.
+    with pytest.raises(ValueError, match="mock"):
+        RunConfig(planner="openai", model="gpt-5.4-nano", strict_runners=True)
 
 
 def test_run_config_roles_default_to_base_ref() -> None:

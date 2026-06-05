@@ -1,3 +1,15 @@
+"""Graph-spec validation — the gate every GraphSpec passes before it can run.
+
+`validate_graph_spec` re-checks a planner-produced (or recorded) `GraphSpec`
+against the registry vocabulary and the host `ExecutionPolicy`: node kinds and
+tool/subagent names are in the allow-set, the topology is a reachable acyclic DAG,
+every node input is produced by a real ancestor, ids are well-formed, and the
+budget is clamped to `min(host, request)` and *stamped* onto the returned spec. It
+is the single chokepoint that makes governance enforceable — the root run and every
+nested `spawn_subgraph` child go through it — so a planner can never widen its own
+envelope or name a capability the host didn't grant.
+"""
+
 from __future__ import annotations
 
 import re

@@ -66,6 +66,11 @@ from dynamic_subgraphs.usage import TokenUsage
 # `Model` is the public, SDK-facing name for a concrete model choice.
 Model = ModelRef
 
+# The `Model` convenience constructors surfaced by `capabilities()`. Kept next to
+# the alias and asserted against the real classmethods by a guard test, so the
+# capability list can't drift from the constructors it advertises.
+MODEL_CONSTRUCTORS: tuple[str, ...] = ("lmstudio", "ollama", "openai_compatible")
+
 # Anything the engine accepts as a recording policy.
 RecordingInput = bool | Artifact | Iterable[Artifact] | Recording
 
@@ -431,16 +436,10 @@ class DynamicSubgraphs:
             "model_roles": list(MODEL_ROLES),
             "node_kinds": list(NODE_KINDS),
             "artifacts": [a.value for a in Artifact],
-            "recording_presets": [
-                "none",
-                "all",
-                "debug",
-                "visual_only",
-                "replayable",
-            ],
+            "recording_presets": list(Recording.preset_names()),
             "statuses": list(RUN_STATUSES),
             "structured_methods": list(STRUCTURED_METHODS),
-            "model_constructors": ["lmstudio", "ollama", "openai_compatible"],
+            "model_constructors": list(MODEL_CONSTRUCTORS),
         }
 
     def __init__(self, config: EngineConfig | None = None) -> None:
@@ -497,7 +496,7 @@ class DynamicSubgraphs:
             populated for recorded artifacts). `.to_dict()` for JSON.
 
         Example:
-            >>> engine = DynamicSubgraphs(model=Model("openai", "gpt-5.4-nano"))
+            >>> engine = DynamicSubgraphs(EngineConfig(model=Model("openai", "gpt-5.4-nano")))
             >>> r = engine.run("Compare A and B.", record=Recording.visual_only())
             >>> r.ok, "graph.mmd" in r.artifacts
             (True, True)

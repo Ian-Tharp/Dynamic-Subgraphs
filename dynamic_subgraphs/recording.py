@@ -118,6 +118,15 @@ class Recording:
         return cls(frozenset({Artifact.SPEC, Artifact.OUTPUT}))
 
     @classmethod
+    def preset_names(cls) -> tuple[str, ...]:
+        """The preset constructor names — the single source for `capabilities()`.
+
+        Co-located with the presets above so the agent-facing capability list can't
+        drift from the methods that implement it (a guard test asserts the match).
+        """
+        return ("none", "all", "debug", "visual_only", "replayable")
+
+    @classmethod
     def coerce(cls, value: object) -> Recording:
         """Normalize any accepted recording input to a `Recording`.
 

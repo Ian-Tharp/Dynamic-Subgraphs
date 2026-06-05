@@ -8,12 +8,18 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
+from app.supervisor.state import DEFER_STATUSES, RunStatus
+
 if TYPE_CHECKING:
     from app.supervisor.supervisor import SupervisorResult
 
 
 IterationAction = Literal["stop", "replan", "ask_user", "fail"]
 _VALID_ACTIONS = {"stop", "replan", "ask_user", "fail"}
+
+# Default character budget for rendering a run's values into a judge/replan prompt
+# (shared by LlmIterationDecider and the openai/provider factory signatures).
+_DEFAULT_VALUE_RENDER_LIMIT = 4000
 
 
 @dataclass(frozen=True)
@@ -94,14 +100,14 @@ class StatusIterationDecider:
 
     def __call__(self, context: IterationContext) -> IterationDecision:
         result = context.result
-        if result.status == "ok":
+        if result.status == RunStatus.OK:
             return IterationDecision(
                 action="stop",
                 reason="The bounded run completed successfully.",
                 success_criteria_met=True,
             )
 
-        if result.status == "paused":
+        if result.status == RunStatus.PAUSED:
             return IterationDecision(
                 action="ask_user",
                 reason="The bounded run paused waiting for external input.",
@@ -306,7 +312,7 @@ class LlmIterationDecider:
         success_criteria: str | None = None,
         fallback: IterationDecider | None = None,
         judge_failed_runs: bool = False,
-        value_render_limit: int = 4000,
+        value_render_limit: int = _DEFAULT_VALUE_RENDER_LIMIT,
     ) -> None:
         self._model = structured_model
         self._success_criteria = success_criteria
@@ -319,18 +325,9 @@ class LlmIterationDecider:
 
         # Obvious cases: defer to the fallback decider. Don't spend tokens
         # on decisions the framework's classification already settled.
-        defer_statuses = {
-            "paused",
-            "plan_failed",
-            "validation_failed",
-            "compile_failed",
-            "record_failed",
-            "resume_failed",
-            "replay_failed",
-        }
-        if status in defer_statuses:
+        if status in DEFER_STATUSES:
             return self._fallback(context)
-        if status == "execution_failed" and not self._judge_failed_runs:
+        if status == RunStatus.EXECUTION_FAILED and not self._judge_failed_runs:
             return self._fallback(context)
 
         # Lazy import to avoid pulling langchain-core when the LLM decider
@@ -457,7 +454,7 @@ def build_openai_iteration_decider(
     temperature: float | None = None,
     fallback: IterationDecider | None = None,
     judge_failed_runs: bool = False,
-    value_render_limit: int = 4000,
+    value_render_limit: int = _DEFAULT_VALUE_RENDER_LIMIT,
 ) -> LlmIterationDecider:
     """Convenience factory: an `LlmIterationDecider` backed by ChatOpenAI.
 
@@ -473,7 +470,7 @@ def build_openai_iteration_decider(
     structured = chat.with_structured_output(
         _IterationDecisionPayload, method="function_calling"
     )
-    return build_llm_iteration_decider(
+    return LlmIterationDecider(
         structured,
         success_criteria=success_criteria,
         fallback=fallback,
@@ -489,7 +486,7 @@ def build_provider_iteration_decider(
     success_criteria: str | None = None,
     fallback: IterationDecider | None = None,
     judge_failed_runs: bool = False,
-    value_render_limit: int = 4000,
+    value_render_limit: int = _DEFAULT_VALUE_RENDER_LIMIT,
 ) -> LlmIterationDecider:
     """Build an LLM judge from a registered model provider."""
 
@@ -497,27 +494,8 @@ def build_provider_iteration_decider(
         model_ref,
         _IterationDecisionPayload,
     )
-    return build_llm_iteration_decider(
-        structured,
-        success_criteria=success_criteria,
-        fallback=fallback,
-        judge_failed_runs=judge_failed_runs,
-        value_render_limit=value_render_limit,
-    )
-
-
-def build_llm_iteration_decider(
-    structured_model: _StructuredJudgeModel,
-    *,
-    success_criteria: str | None = None,
-    fallback: IterationDecider | None = None,
-    judge_failed_runs: bool = False,
-    value_render_limit: int = 4000,
-) -> LlmIterationDecider:
-    """Build an LLM judge from any provider's structured-output model."""
-
     return LlmIterationDecider(
-        structured_model,
+        structured,
         success_criteria=success_criteria,
         fallback=fallback,
         judge_failed_runs=judge_failed_runs,

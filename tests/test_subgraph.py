@@ -192,7 +192,7 @@ def _child_spec(graph_id: str, *, nodes, edges, budget=None) -> GraphSpec:
     return GraphSpec(**kwargs)
 
 
-def test_launcher_plans_and_runs_a_child(tmp_path) -> None:
+def test_launcher_plans_and_runs_a_child() -> None:
     from app.runtime.executor import LangGraphExecutor
 
     child = _child_spec(
@@ -387,7 +387,7 @@ def test_launcher_bans_wait_for_event_in_children() -> None:
         launcher("g", run_id="p__sg_w", graph_depth=1, parent_run_id="p", inputs={})
 
 
-def test_launcher_seeds_graph_depth_into_child(tmp_path) -> None:
+def test_launcher_seeds_graph_depth_into_child() -> None:
     from app.runtime.executor import LangGraphExecutor
 
     child = _child_spec(
@@ -836,16 +836,31 @@ def _run_two_spawns(*, max_llm_calls: int, sequential: bool):
     return executor.execute(executor.compile(validate_graph_spec(parent)), run_id="p")
 
 
-def test_concurrent_sibling_spawns_cannot_overspend_the_budget() -> None:
+@pytest.mark.parametrize("trial", range(5))
+def test_concurrent_sibling_spawns_cannot_overspend_the_budget(trial: int) -> None:
     # The regression. Two spawn_subgraph siblings run in ONE superstep; each child
     # wants 2 LLM calls but the parent budget is only 2. Without the shared
     # BudgetLedger both read the same pre-merge counters, each clamp their child to
     # the full remaining (2), and jointly spend 4. With it, the lock serializes the
-    # reservations so the grants sum to the remaining — the nest never overspends
-    # (the loser fails closed; allocation is first-come-greedy under contention).
+    # reservations: the first sibling reserves the whole remaining and the second is
+    # starved to zero and fails closed (allocation is first-come-greedy). Run a few
+    # trials so a lock regression can't hide behind a single lucky interleaving.
+    del trial
     result = _run_two_spawns(max_llm_calls=2, sequential=False)
+    counters = result.state["counters"]
+    values = result.state.get("values", {}) or {}
 
-    assert result.state["counters"]["llm_calls_consumed"] <= 2  # never 4
+    # EXACTLY the budget is spent — never 4 (the over-spend this fixes) and never
+    # 0/1 (the winner runs its 2-call child in full). A `<= 2` assertion would also
+    # pass with the lock removed under common schedules; `== 2` is what pins the fix.
+    assert counters["llm_calls_consumed"] == 2
+    # One child completed and produced its report; the other was refused outright.
+    produced = [key for key in ("rep_a", "rep_b") if key in values]
+    assert len(produced) == 1
+    # The starved sibling failed CLOSED (recorded an error), not silently — fail-
+    # closed under contention is the whole governance contract here.
+    assert result.ok is False
+    assert result.state.get("errors")
 
 
 def test_sequential_spawns_share_the_budget_across_supersteps() -> None:
@@ -856,3 +871,6 @@ def test_sequential_spawns_share_the_budget_across_supersteps() -> None:
 
     assert result.ok is True
     assert result.state["counters"]["llm_calls_consumed"] == 4  # 2 + 2
+    # Both children completed — neither is starved when the budget genuinely fits.
+    values = result.state.get("values", {}) or {}
+    assert "rep_a" in values and "rep_b" in values

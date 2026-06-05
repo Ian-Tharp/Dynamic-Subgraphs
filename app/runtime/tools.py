@@ -37,6 +37,12 @@ from typing import Any, Protocol
 from app.models import DynamicRunState
 from app.runtime.runners import NodeRunner, ToolCallable, run_tool_call
 
+# Cap on bytes read from a search HTTP response — a guard against an unbounded or
+# hostile body. Search responses are small; this is a ceiling, not an expectation.
+_MAX_RESPONSE_BYTES = 2_000_000
+# Max characters kept per result snippet before truncation.
+_SNIPPET_CHARS = 1500
+
 # ---------- search provider abstraction ----------
 
 
@@ -98,7 +104,7 @@ class TavilySearchProvider:
 
         try:
             with urllib.request.urlopen(request, timeout=self._timeout) as response:
-                raw = response.read(2_000_000)
+                raw = response.read(_MAX_RESPONSE_BYTES)
         except Exception as exc:
             raise RuntimeError(
                 f"Tavily search failed for query {query!r}: {exc}"
@@ -118,7 +124,7 @@ class TavilySearchProvider:
                 {
                     "title": str(item.get("title", "")),
                     "url": str(item.get("url", "")),
-                    "snippet": str(item.get("content", ""))[:1500],
+                    "snippet": str(item.get("content", ""))[:_SNIPPET_CHARS],
                     "score": item.get("score"),
                 }
                 for item in (payload.get("results") or [])
@@ -165,7 +171,7 @@ class DuckDuckGoSearchProvider:
 
         try:
             with urllib.request.urlopen(request, timeout=self._timeout) as response:
-                raw = response.read(1_000_000)
+                raw = response.read(_MAX_RESPONSE_BYTES)
         except Exception as exc:
             raise RuntimeError(
                 f"DuckDuckGo search failed for query {query!r}: {exc}"
@@ -492,7 +498,7 @@ def _bing_search(
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-            raw = response.read(2_000_000)
+            raw = response.read(_MAX_RESPONSE_BYTES)
     except Exception as exc:
         raise RuntimeError(
             f"bing search fallback failed for query {query!r}: {exc}"

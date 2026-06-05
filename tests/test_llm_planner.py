@@ -143,7 +143,7 @@ def test_first_invocation_includes_system_and_human_messages() -> None:
 # ---------- retry on invalid spec ----------
 
 
-def test_planner_retries_and_recovers(monkeypatch) -> None:
+def test_planner_retries_and_recovers() -> None:
     model = FakeStructuredModel([_invalid_spec_dangling_edge(), _valid_spec()])
     planner = LLMPlanner(model, max_retries=2)
 

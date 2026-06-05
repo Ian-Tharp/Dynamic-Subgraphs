@@ -12,6 +12,7 @@ from app.api.jobs import JobStore
 from app.api.settings import ApiSettings
 from app.assembly import RunConfig, build_supervisor
 from app.recording import FileRecorder
+from app.recording.recorder import validate_run_id
 from app.runtime import (
     MissingModelProviderCredential,
     ProviderRegistry,
@@ -23,6 +24,19 @@ from app.supervisor import (
     Supervisor,
     build_provider_iteration_decider,
 )
+
+
+def require_valid_run_id(run_id: str) -> None:
+    """Validate a path-bound id at the HTTP boundary, mapping a bad one to 400.
+
+    The recorder's `validate_run_id` raises a bare `ValueError`; left unhandled
+    that surfaces as a 500. Re-raise it as `BadRequest` so hostile/malformed ids
+    return 400 (and don't pollute the server-error rate).
+    """
+    try:
+        validate_run_id(run_id)
+    except ValueError as exc:
+        raise BadRequest(str(exc)) from exc
 
 
 @dataclass

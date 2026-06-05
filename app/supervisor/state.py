@@ -11,11 +11,52 @@ one supervisor node, so LangGraph's default last-write-wins is fine.
 from __future__ import annotations
 
 import operator
+from enum import StrEnum
 from typing import Annotated, Any, TypedDict
 
 from app.models import GraphSpec
 from app.recording import RunRecord
 from app.runtime import ExecutionResult
+
+
+class RunStatus(StrEnum):
+    """Canonical supervisor run-status vocabulary — the single source of truth.
+
+    `StrEnum` members ARE plain strings, so `status == "ok"`, set membership, and
+    JSON serialization behave exactly as the bare literals did; this only gives the
+    vocabulary one definition instead of scattering it across literals, named
+    constants in `graph.py`, and a hardcoded set in `iteration.py`.
+    """
+
+    PENDING = "pending"
+    OK = "ok"
+    PAUSED = "paused"
+    PLAN_FAILED = "plan_failed"
+    VALIDATION_FAILED = "validation_failed"
+    COMPILE_FAILED = "compile_failed"
+    EXECUTION_FAILED = "execution_failed"
+    RECORD_FAILED = "record_failed"
+    RESUME_FAILED = "resume_failed"
+    REPLAY_FAILED = "replay_failed"
+    # Transient: routes straight back to `plan`, never a final status.
+    PLAN_REPAIR_NEEDED = "plan_repair_needed"
+
+
+# Statuses the LLM iteration judge defers on: the framework already classified the
+# outcome, so it shouldn't spend tokens re-deciding. `EXECUTION_FAILED` is excluded
+# on purpose — `judge_failed_runs` decides whether to judge those. Derived from the
+# enum so the defer-set can't desync from the vocabulary.
+DEFER_STATUSES: frozenset[RunStatus] = frozenset(
+    {
+        RunStatus.PAUSED,
+        RunStatus.PLAN_FAILED,
+        RunStatus.VALIDATION_FAILED,
+        RunStatus.COMPILE_FAILED,
+        RunStatus.RECORD_FAILED,
+        RunStatus.RESUME_FAILED,
+        RunStatus.REPLAY_FAILED,
+    }
+)
 
 
 class SupervisorState(TypedDict, total=False):

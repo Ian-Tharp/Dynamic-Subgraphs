@@ -11,9 +11,15 @@ ExecutionMode = Literal["sync", "async", "auto"]
 PlannerChoice = Literal["mock", "llm", "openai"]
 ChainDeciderChoice = Literal["status", "llm"]
 
+# Upper bound on the free-text prompt. It is the one large, attacker-controllable
+# input that drives a paid LLM call and is persisted to disk, so it carries an
+# explicit ceiling (generous — ~25k tokens) instead of relying on a downstream
+# limit. `success_criteria` is already capped; this removes that asymmetry.
+MAX_PROMPT_CHARS = 100_000
+
 
 class RunRequest(BaseModel):
-    prompt: str = Field(min_length=1)
+    prompt: str = Field(min_length=1, max_length=MAX_PROMPT_CHARS)
     run_id: str | None = None
     mode: ExecutionMode = "auto"
     planner: PlannerChoice | None = None
@@ -22,7 +28,7 @@ class RunRequest(BaseModel):
 
 
 class ChainRequest(BaseModel):
-    prompt: str = Field(min_length=1)
+    prompt: str = Field(min_length=1, max_length=MAX_PROMPT_CHARS)
     run_id: str | None = None
     mode: ExecutionMode = "auto"
     planner: PlannerChoice | None = None

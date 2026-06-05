@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from app.models import GraphSpec
 from app.models.graph_spec import GraphBudget
@@ -353,7 +354,7 @@ def test_unsupported_schema_version_is_rejected(
     raw = minimal_spec.model_dump(mode="json", by_alias=True)
     raw["schema_version"] = 99
 
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         # Pydantic Literal[1] will reject before validator even runs;
         # this guards against the literal being widened by accident.
         GraphSpec.model_validate(raw)
