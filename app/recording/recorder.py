@@ -33,7 +33,7 @@ from app.recording.mermaid import render_mermaid
 from app.runtime import ExecutionResult
 
 if TYPE_CHECKING:
-    from app.supervisor.iteration import IterativeSupervisorResult
+    from app.supervisor.iteration import IterationDecision, IterativeSupervisorResult
 
 _SAFE_RUN_ID_CHARS: frozenset[str] = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_."
@@ -565,6 +565,21 @@ def _render_summary(
     return "\n".join(lines)
 
 
+def _decision_to_dict(decision: IterationDecision) -> dict[str, Any]:
+    """JSON shape for one iteration decision — the chain's persisted memory.
+
+    Used for both per-step and final decisions so the two can't drift.
+    """
+    return {
+        "action": decision.action,
+        "reason": decision.reason,
+        "success_criteria_met": decision.success_criteria_met,
+        "gaps": list(decision.gaps),
+        "next_prompt": decision.next_prompt,
+        "question_to_user": decision.question_to_user,
+    }
+
+
 def _serialize_chain(
     result: IterativeSupervisorResult,
     *,
@@ -574,7 +589,6 @@ def _serialize_chain(
 
     steps_payload: list[dict[str, Any]] = []
     for step in result.steps:
-        decision = step.decision
         steps_payload.append(
             {
                 "iteration": step.iteration,
@@ -589,28 +603,13 @@ def _serialize_chain(
                         else None
                     ),
                 },
-                "decision": {
-                    "action": decision.action,
-                    "reason": decision.reason,
-                    "success_criteria_met": decision.success_criteria_met,
-                    "gaps": list(decision.gaps),
-                    "next_prompt": decision.next_prompt,
-                    "question_to_user": decision.question_to_user,
-                },
+                "decision": _decision_to_dict(step.decision),
             }
         )
 
     final_decision_payload: dict[str, Any] | None = None
     if result.final_decision is not None:
-        fd = result.final_decision
-        final_decision_payload = {
-            "action": fd.action,
-            "reason": fd.reason,
-            "success_criteria_met": fd.success_criteria_met,
-            "gaps": list(fd.gaps),
-            "next_prompt": fd.next_prompt,
-            "question_to_user": fd.question_to_user,
-        }
+        final_decision_payload = _decision_to_dict(result.final_decision)
 
     return {
         "schema_version": CHAIN_SCHEMA_VERSION,
