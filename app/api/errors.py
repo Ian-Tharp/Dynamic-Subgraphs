@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -43,7 +45,7 @@ class ServiceUnavailable(ApiError):
     error_type = "ServiceUnavailable"
 
 
-def _envelope(error_type: str, message: str, detail: object = None) -> dict:
+def _envelope(error_type: str, message: str, detail: object = None) -> dict[str, Any]:
     return {"error": {"type": error_type, "message": message, "detail": detail}}
 
 
