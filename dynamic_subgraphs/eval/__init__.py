@@ -8,6 +8,10 @@ until an `EvalGate` is configured on `EngineConfig`.
 
 from __future__ import annotations
 
+from dynamic_subgraphs.eval.gates import (
+    DeterministicEvalGate,
+    build_deterministic_eval_gate,
+)
 from dynamic_subgraphs.eval.types import (
     EVAL_SCHEMA_VERSION,
     QUALITY_FLOOR_DEFAULT,
@@ -31,6 +35,7 @@ __all__ = [
     "EVAL_SCHEMA_VERSION",
     "QUALITY_FLOOR_DEFAULT",
     "ComponentVerdict",
+    "DeterministicEvalGate",
     "Dimension",
     "EvalContext",
     "EvalGate",
@@ -42,6 +47,7 @@ __all__ = [
     "RunFingerprint",
     "ScoreComponent",
     "ScoreMethod",
+    "build_deterministic_eval_gate",
     "value_per_ktok",
     "value_per_usd",
 ]
