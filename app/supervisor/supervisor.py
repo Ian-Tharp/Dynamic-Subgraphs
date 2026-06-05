@@ -24,6 +24,7 @@ from app.supervisor.iteration import (
 )
 from app.supervisor.planner import Planner
 from app.supervisor.responses import render_interrupt_label, render_value_summary
+from app.supervisor.state import RunStatus
 
 
 @dataclass(frozen=True)
@@ -259,7 +260,7 @@ class Supervisor:
         except Exception as exc:
             return SupervisorResult(
                 run_id=effective_new_run_id,
-                status="replay_failed",
+                status=RunStatus.REPLAY_FAILED,
                 response=(
                     f"Replay halted: could not load recorded spec for {run_id!r}: {exc}"
                 ),
@@ -284,7 +285,7 @@ class Supervisor:
         except RegistryValidationError as exc:
             return SupervisorResult(
                 run_id=effective_new_run_id,
-                status="replay_failed",
+                status=RunStatus.REPLAY_FAILED,
                 response=(
                     f"Replay halted: recorded spec for {run_id!r} violates the "
                     f"current policy: {exc}"
@@ -315,7 +316,7 @@ class Supervisor:
         except Exception as exc:
             return SupervisorResult(
                 run_id=effective_new_run_id,
-                status="replay_failed",
+                status=RunStatus.REPLAY_FAILED,
                 response=f"Replay halted at compile: {exc}",
                 validated_spec=spec,
                 result=None,
@@ -341,7 +342,7 @@ class Supervisor:
         except Exception as exc:
             return SupervisorResult(
                 run_id=effective_new_run_id,
-                status="replay_failed",
+                status=RunStatus.REPLAY_FAILED,
                 response=f"Replay halted at execute: {exc}",
                 validated_spec=spec,
                 result=None,
@@ -369,7 +370,7 @@ class Supervisor:
             )
 
         if result.paused:
-            status = "paused"
+            status = RunStatus.PAUSED
             label = render_interrupt_label(result.interrupt_payloads)
             response = (
                 f"Replay of {run_id!r} as {effective_new_run_id!r} paused "
@@ -377,20 +378,20 @@ class Supervisor:
                 f"Call supervisor.resume(run_id, event=...) to continue."
             )
         elif result.ok:
-            status = "ok"
+            status = RunStatus.OK
             response = (
                 f"Replayed {run_id!r} as {effective_new_run_id!r}. "
                 f"Produced {render_value_summary(result.state.get('values', {}))}."
             )
         else:
-            status = "execution_failed"
+            status = RunStatus.EXECUTION_FAILED
             response = (
                 f"Replay of {run_id!r} executed but reported failure: "
                 f"{result.error or 'unknown error'}"
             )
 
-        if errors and status == "ok":
-            status = "record_failed"
+        if errors and status == RunStatus.OK:
+            status = RunStatus.RECORD_FAILED
             response = (
                 f"Replay of {run_id!r} completed but the new record could "
                 f"not be persisted: {errors[-1]['message']}"
@@ -434,7 +435,7 @@ class Supervisor:
             )
             return SupervisorResult(
                 run_id=run_id,
-                status="resume_failed",
+                status=RunStatus.RESUME_FAILED,
                 response=(
                     f"Resume halted: could not load recorded spec for {run_id!r}: {exc}"
                 ),
@@ -456,7 +457,7 @@ class Supervisor:
             )
             return SupervisorResult(
                 run_id=run_id,
-                status="resume_failed",
+                status=RunStatus.RESUME_FAILED,
                 response=f"Resume halted at compile: {exc}",
                 validated_spec=spec,
                 result=None,
@@ -476,7 +477,7 @@ class Supervisor:
             )
             return SupervisorResult(
                 run_id=run_id,
-                status="resume_failed",
+                status=RunStatus.RESUME_FAILED,
                 response=f"Resume halted at execute: {exc}",
                 validated_spec=spec,
                 result=None,
@@ -502,26 +503,26 @@ class Supervisor:
             )
 
         if result.paused:
-            status = "paused"
+            status = RunStatus.PAUSED
             label = render_interrupt_label(result.interrupt_payloads)
             response = (
                 f"Run paused again waiting for {label}. "
                 f"Call supervisor.resume(run_id, event=...) to continue."
             )
         elif result.ok:
-            status = "ok"
+            status = RunStatus.OK
             response = (
                 f"Run resumed and completed. "
                 f"Produced {render_value_summary(result.state.get('values', {}))}."
             )
         else:
-            status = "execution_failed"
+            status = RunStatus.EXECUTION_FAILED
             response = f"Resumed run failed: {result.error or 'unknown error'}"
 
         # Record-step failures don't change the underlying status, but they
         # surface in the errors list and influence the response.
-        if errors and status == "ok":
-            status = "record_failed"
+        if errors and status == RunStatus.OK:
+            status = RunStatus.RECORD_FAILED
             response = (
                 "Run resumed but the new state could not be persisted: "
                 f"{errors[-1]['message']}"
