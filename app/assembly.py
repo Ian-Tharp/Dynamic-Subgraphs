@@ -270,7 +270,8 @@ def build_supervisor(
             executor=executor,
             recorder=recorder,
             policy=effective_policy,
-        )
+        ),
+        ledger_registry=executor.ledgers,
     )
     return Supervisor(
         planner=planner,

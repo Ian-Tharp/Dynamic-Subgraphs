@@ -747,3 +747,112 @@ def test_planner_advertises_spawn_subgraph_with_guidance() -> None:
     assert NodeKind.SPAWN_SUBGRAPH in planner._executable_kinds
     assert "spawn_subgraph" in planner._system_prompt
     assert "sub_goal" in planner._system_prompt  # params are documented
+
+
+# ---------- concurrent-sibling budget (TOCTOU reserve-and-refund) ----------
+
+
+def _two_llm_child() -> GraphSpec:
+    return _child_spec(
+        "child",
+        nodes=[
+            NodeSpec(
+                id="a",
+                kind=NodeKind.LLM_CALL,
+                outputs=["a"],
+                params={"instruction": "A"},
+            ),
+            NodeSpec(
+                id="b",
+                kind=NodeKind.LLM_CALL,
+                inputs=["a"],
+                outputs=["b"],
+                params={"instruction": "B"},
+            ),
+        ],
+        edges=[
+            EdgeSpec.model_validate({"from": "START", "to": "a"}),
+            EdgeSpec.model_validate({"from": "a", "to": "b"}),
+            EdgeSpec.model_validate({"from": "b", "to": "END"}),
+        ],
+    )
+
+
+def _run_two_spawns(*, max_llm_calls: int, sequential: bool):
+    # Two spawn_subgraph siblings, each child wanting 2 LLM calls. `sequential`
+    # orders them (spawn_a -> spawn_b, distinct supersteps); otherwise both edge
+    # straight off START and LangGraph runs them in ONE superstep (concurrently,
+    # on its thread pool) — the case the TOCTOU is about.
+    from app.registry import validate_graph_spec
+    from app.runtime.executor import LangGraphExecutor
+
+    def child_planner(sub_goal):
+        del sub_goal
+        return _two_llm_child()
+
+    def echo(state, params):
+        del state
+        return {"result": params["instruction"]}
+
+    runners = {NodeKind.LLM_CALL: echo}
+    executor = LangGraphExecutor(runners=runners)
+    runners[NodeKind.SPAWN_SUBGRAPH] = build_spawn_subgraph_runner(
+        make_child_launcher(planner=child_planner, executor=executor),
+        ledger_registry=executor.ledgers,
+    )
+    nodes = [
+        NodeSpec(
+            id="spawn_a",
+            kind=NodeKind.SPAWN_SUBGRAPH,
+            outputs=["rep_a"],
+            params={"sub_goal": "g", "name": "ca"},
+        ),
+        NodeSpec(
+            id="spawn_b",
+            kind=NodeKind.SPAWN_SUBGRAPH,
+            outputs=["rep_b"],
+            params={"sub_goal": "g", "name": "cb"},
+        ),
+    ]
+    if sequential:
+        raw_edges = [
+            {"from": "START", "to": "spawn_a"},
+            {"from": "spawn_a", "to": "spawn_b"},
+            {"from": "spawn_b", "to": "END"},
+        ]
+    else:
+        raw_edges = [
+            {"from": "START", "to": "spawn_a"},
+            {"from": "START", "to": "spawn_b"},
+            {"from": "spawn_a", "to": "END"},
+            {"from": "spawn_b", "to": "END"},
+        ]
+    parent = _child_spec(
+        "parent",
+        nodes=nodes,
+        edges=[EdgeSpec.model_validate(e) for e in raw_edges],
+        budget=GraphBudget(max_llm_calls=max_llm_calls),
+    )
+    return executor.execute(executor.compile(validate_graph_spec(parent)), run_id="p")
+
+
+def test_concurrent_sibling_spawns_cannot_overspend_the_budget() -> None:
+    # The regression. Two spawn_subgraph siblings run in ONE superstep; each child
+    # wants 2 LLM calls but the parent budget is only 2. Without the shared
+    # BudgetLedger both read the same pre-merge counters, each clamp their child to
+    # the full remaining (2), and jointly spend 4. With it, the lock serializes the
+    # reservations so the grants sum to the remaining — the nest never overspends
+    # (the loser fails closed; allocation is first-come-greedy under contention).
+    result = _run_two_spawns(max_llm_calls=2, sequential=False)
+
+    assert result.state["counters"]["llm_calls_consumed"] <= 2  # never 4
+
+
+def test_sequential_spawns_share_the_budget_across_supersteps() -> None:
+    # Two spawns in series: the second runs a later superstep, so counters have
+    # absorbed the first's spend. The ledger's baseline reconciliation must let the
+    # second see the real remaining and run — both 2-call children fit a budget of 4.
+    result = _run_two_spawns(max_llm_calls=4, sequential=True)
+
+    assert result.ok is True
+    assert result.state["counters"]["llm_calls_consumed"] == 4  # 2 + 2

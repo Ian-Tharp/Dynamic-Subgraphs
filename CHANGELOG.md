@@ -7,6 +7,16 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
 
 ## [Unreleased]
 
+### Fixed
+- Closed the concurrent-sibling `spawn_subgraph` budget TOCTOU (the deferred 0.2.0
+  known limitation): two spawns scheduled in one superstep no longer each read the
+  same pre-merge counters and over-allocate their children. A shared per-graph
+  `BudgetLedger` reserves the remaining node/LLM allowance under a lock (refunding
+  the unused portion), so concurrent siblings' grants always sum to within the host
+  budget — fail-closed, never overspending. Allocation is first-come-greedy under
+  contention (the loser fails closed); sequential spawns share the budget across
+  supersteps.
+
 ## [0.3.0] — 2026-06-05
 
 The headline of this release is the **start of the eval/value layer**: a
