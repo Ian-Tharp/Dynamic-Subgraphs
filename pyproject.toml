@@ -131,6 +131,11 @@ strict = true
 module = ["app.*"]
 disallow_untyped_defs = false
 
+# Incrementally bringing app under strict typing — models + registry are clean.
+[[tool.mypy.overrides]]
+module = ["app.models.*", "app.registry.*"]
+strict = true
+
 [[tool.mypy.overrides]]
 module = ["tests.*"]
 ignore_errors = true
