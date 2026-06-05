@@ -278,3 +278,39 @@ def test_every_registry_kind_has_an_executable_path() -> None:
     assert not missing, (
         f"these NodeKinds have no executable path: {sorted(k.value for k in missing)}"
     )
+
+
+def test_execute_abandons_a_run_that_outruns_its_wall_clock_budget(
+    minimal_spec: GraphSpec,
+) -> None:
+    # The wall-clock rail must actually ABANDON a run whose runner outlives the
+    # granted max_wall_seconds — bounding latency even when a runner hangs with no
+    # client timeout. This is the behavioral guard for the deadline path
+    # (execute() -> _DeadlineExceeded -> _timeout_result); the budget-math tests in
+    # test_policy can't catch a regression that drops the deadline (passing None or
+    # a huge value), because they never run a graph.
+    import time
+
+    def hangs(state, params):
+        del state, params
+        time.sleep(3.0)
+        return {"result": "never returned in time"}
+
+    validated = validate_graph_spec(minimal_spec)
+    # Stamp the tightest legal wall budget (1s, the model's floor) onto the
+    # effective spec; the runner sleeps well past it.
+    tight = validated.model_copy(
+        update={"budget": validated.budget.model_copy(update={"max_wall_seconds": 1})}
+    )
+    executor = LangGraphExecutor(runners={NodeKind.LLM_CALL: hangs})
+
+    started = time.monotonic()
+    result = executor.execute(executor.compile(tight), run_id="run-deadline")
+    elapsed = time.monotonic() - started
+
+    assert result.ok is False
+    assert result.paused is False
+    assert "deadline" in (result.error or "")
+    assert "1s" in (result.error or "")  # the error names the budget it blew
+    # It gives up at ~the deadline rather than waiting out the full 3s runner.
+    assert elapsed < 2.5
