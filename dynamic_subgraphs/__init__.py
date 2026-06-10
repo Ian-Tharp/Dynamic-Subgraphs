@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from app.policy import ExecutionPolicy
 from app.runtime import ModelRef
+from dynamic_subgraphs.corpus import EvalCorpus, OriginComparison
 from dynamic_subgraphs.engine import (
     DynamicSubgraphs,
     EngineConfig,
@@ -67,6 +68,7 @@ __all__ = [
     "DynamicSubgraphs",
     "EngineConfig",
     "EvalContext",
+    "EvalCorpus",
     "EvalGate",
     "EvalReference",
     "EvalResult",
@@ -75,6 +77,7 @@ __all__ = [
     "Model",
     "ModelRef",
     "ModelSelection",
+    "OriginComparison",
     "Planner",
     "Recording",
     "RunFingerprint",
