@@ -1,6 +1,7 @@
 """_EvalProducer + ArtifactContext.eval_result tests (Slice 7 PR3)."""
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -49,19 +50,23 @@ def test_eval_producer_skips_without_payload(tmp_path, minimal_spec: GraphSpec) 
 
 def test_eval_producer_writes_json(tmp_path, minimal_spec: GraphSpec) -> None:
     spec, result = minimal_spec, _run_pipeline(minimal_spec, run_id="with-eval")
+    payload = _eval_payload() | {"evaluated_at": datetime.now(UTC)}
     ctx = ArtifactContext(
         run_id="r1",
         directory=tmp_path,
         spec=spec,
         result=result,
         prompt=None,
-        eval_result=_eval_payload(),
+        eval_result=payload,
     )
     producer = _EvalProducer()
     assert producer.applies(ctx) is True
     path = producer.write(ctx)
     assert path.name == "eval.json"
-    assert json.loads(path.read_text(encoding="utf-8"))["quality"] == 0.8
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    assert loaded["quality"] == 0.8
+    # default=str gracefully degrades non-JSON types (datetime) to strings.
+    assert isinstance(loaded["evaluated_at"], str)
 
 
 def test_eval_producer_registered() -> None:

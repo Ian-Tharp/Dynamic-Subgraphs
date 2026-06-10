@@ -218,9 +218,10 @@ class _EvalProducer:
         return ctx.eval_result is not None
 
     def write(self, ctx: ArtifactContext) -> Path:
+        assert ctx.eval_result is not None  # guaranteed by applies()
         path = ctx.directory / self.filename
         path.write_text(
-            json.dumps(dict(ctx.eval_result or {}), indent=2, default=str),
+            json.dumps(dict(ctx.eval_result), indent=2, default=str),
             encoding="utf-8",
         )
         return path
