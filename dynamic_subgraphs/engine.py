@@ -33,6 +33,7 @@ replay; leave it at the default in production / library use.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
@@ -70,6 +71,8 @@ from dynamic_subgraphs.types import (
     RunStatus,
 )
 from dynamic_subgraphs.usage import TokenUsage
+
+logger = logging.getLogger(__name__)
 
 # `Model` is the public, SDK-facing name for a concrete model choice.
 Model = ModelRef
@@ -590,17 +593,19 @@ class DynamicSubgraphs:
             usage=usage,
             cost=cost,
         )
-        run_result.eval = self._score(
-            run_result=run_result,
-            supervisor_result=result,
-            config=config,
-            recorder=recorder,
-            prompt=prompt,
-            task_id=task_id,
-            origin=origin,
-            reference=reference,
+        return replace(
+            run_result,
+            eval=self._score(
+                run_result=run_result,
+                supervisor_result=result,
+                config=config,
+                recorder=recorder,
+                prompt=prompt,
+                task_id=task_id,
+                origin=origin,
+                reference=reference,
+            ),
         )
-        return run_result
 
     def _score(
         self,
@@ -637,9 +642,9 @@ class DynamicSubgraphs:
                 status=run_result.status,
                 usage=run_result.usage,
                 cost=run_result.cost,
-                origin=origin or defaults.origin,
-                task_id=task_id or defaults.task_id,
-                reference=reference or defaults.reference,
+                origin=origin if origin is not None else defaults.origin,
+                task_id=task_id if task_id is not None else defaults.task_id,
+                reference=reference if reference is not None else defaults.reference,
                 planner_model_name=planner_name,
             )
             eval_result = gate.evaluate(ctx)
@@ -649,4 +654,10 @@ class DynamicSubgraphs:
                 )
             return eval_result
         except Exception:  # a broken gate must never fail the run
+            logger.warning(
+                "eval gate %r failed for run %r — scoring skipped",
+                getattr(gate, "name", type(gate).__name__),
+                run_result.run_id,
+                exc_info=True,
+            )
             return None
