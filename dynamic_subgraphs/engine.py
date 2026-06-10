@@ -497,6 +497,7 @@ class DynamicSubgraphs:
         task_id: str | None = None,
         origin: Origin | None = None,
         reference: EvalReference | None = None,
+        fixed_spec: GraphSpec | None = None,
     ) -> RunResult:
         """Plan, run, and record one dynamic subgraph for `prompt`.
 
@@ -517,6 +518,9 @@ class DynamicSubgraphs:
                 "routed"); overrides `EngineConfig.eval_tags.origin`.
             reference: per-task gold/checklist for reference-anchored scoring;
                 overrides `EngineConfig.eval_tags.reference`.
+            fixed_spec: run this hand-authored, registry-validated `GraphSpec`
+                instead of planning — the benchmark's authored/routed arms;
+                combine with the default planner="llm" for real LLM workers.
 
         Returns:
             A `RunResult` — check `.ok`, read `.response`/`.values`, inspect
@@ -547,6 +551,8 @@ class DynamicSubgraphs:
             )
         )
         config = selection.to_run_config(planner or self._planner)
+        if fixed_spec is not None:
+            config = replace(config, fixed_spec=fixed_spec)
         run_id = run_id or f"run-{uuid.uuid4().hex[:12]}"
 
         # Recording is opt-in and granular. By default (none) the engine
