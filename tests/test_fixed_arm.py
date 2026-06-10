@@ -32,3 +32,26 @@ def test_engine_threads_fixed_spec(tmp_path) -> None:
     )
     assert r.ok
     assert r.plan is not None and r.plan.graph_id == spec.graph_id
+
+
+def test_fixed_spec_invalid_still_validated(tmp_path) -> None:
+    """Invalid fixed_spec is still rejected by the validation stage.
+
+    Demonstrates that fixed_spec bypasses *planning* but NOT *validation* —
+    registry allowlists/budgets are still enforced (governance layer is intact).
+    """
+    from app.models.graph_spec import EdgeSpec
+    from dynamic_subgraphs import DynamicSubgraphs, EngineConfig
+
+    # Dangling edge: synthesize -> ghost (but ghost doesn't exist)
+    bad_spec = build_demo_spec()
+    bad_spec.edges.append(
+        EdgeSpec.model_validate({"from": "synthesize", "to": "ghost"})
+    )
+
+    r = DynamicSubgraphs(EngineConfig(planner="mock", runs_dir=tmp_path)).run(
+        "ignored", fixed_spec=bad_spec, record=False
+    )
+    assert not r.ok
+    assert r.status == "validation_failed"
+    assert r.plan is None
