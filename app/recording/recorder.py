@@ -14,6 +14,7 @@ Layout:
         graph.mmd     -- Mermaid diagram of the topology
         summary.md    -- human-readable summary
         prompt.md     -- optional, only written if a prompt was provided
+        eval.json     -- optional, only written when eval_gate is configured
       <chain_id>/
         chain.json    -- emitted by record_chain() for iterative runs;
                          sits alongside <chain_id>_iter_N/ directories
@@ -23,6 +24,7 @@ Layout:
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -97,6 +99,9 @@ class ArtifactContext:
     spec: GraphSpec
     result: ExecutionResult
     prompt: str | None
+    # Pre-serialized EvalResult mapping (the eval layer lives in the SDK facade;
+    # app/ must not import it — spec layering rule). None = no score.
+    eval_result: Mapping[str, Any] | None = None
 
 
 class ArtifactProducer(Protocol):
@@ -205,6 +210,22 @@ class _SummaryProducer:
         return path
 
 
+class _EvalProducer:
+    key = "eval"
+    filename = "eval.json"
+
+    def applies(self, ctx: ArtifactContext) -> bool:
+        return ctx.eval_result is not None
+
+    def write(self, ctx: ArtifactContext) -> Path:
+        path = ctx.directory / self.filename
+        path.write_text(
+            json.dumps(dict(ctx.eval_result or {}), indent=2, default=str),
+            encoding="utf-8",
+        )
+        return path
+
+
 # Order is preserved in RunRecord.artifacts and matches the historical layout.
 DEFAULT_PRODUCERS: tuple[ArtifactProducer, ...] = (
     _SpecProducer(),
@@ -213,6 +234,7 @@ DEFAULT_PRODUCERS: tuple[ArtifactProducer, ...] = (
     _MermaidProducer(),
     _PromptProducer(),
     _SummaryProducer(),
+    _EvalProducer(),
 )
 
 
