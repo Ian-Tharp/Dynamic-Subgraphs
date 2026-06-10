@@ -81,3 +81,68 @@ def test_existing_context_call_sites_still_compile(
     rec = FileRecorder(root_dir=tmp_path)
     record = rec.record(spec=spec, result=result)
     assert "eval" not in record.artifacts  # applies() gated it off
+
+
+def test_record_eval_round_trip(tmp_path: Path, minimal_spec: GraphSpec) -> None:
+    spec, result = minimal_spec, _run_pipeline(minimal_spec, run_id="round-trip")
+    rec = FileRecorder(root_dir=tmp_path)
+    rec.record(spec=spec, result=result)
+    run_id = result.trace.run_id
+    path = rec.record_eval(run_id, _eval_payload())
+    assert path is not None and path.name == "eval.json"
+    loaded = rec.load_eval(run_id)
+    assert loaded is not None and loaded["quality"] == 0.8
+
+
+def test_record_eval_respects_selection(
+    tmp_path: Path, minimal_spec: GraphSpec
+) -> None:
+    # EVAL not in selection -> record_eval is a no-op returning None.
+    spec, result = minimal_spec, _run_pipeline(minimal_spec, run_id="selection-test")
+    rec = FileRecorder(root_dir=tmp_path, selection=frozenset({"spec.json"}))
+    rec.record(spec=spec, result=result)
+    run_id = result.trace.run_id
+    assert rec.record_eval(run_id, _eval_payload()) is None
+    assert not (tmp_path / run_id / "eval.json").exists()
+
+
+def test_load_eval_none_for_old_dirs(tmp_path: Path, minimal_spec: GraphSpec) -> None:
+    spec, result = minimal_spec, _run_pipeline(minimal_spec, run_id="old-dir")
+    rec = FileRecorder(root_dir=tmp_path)
+    rec.record(spec=spec, result=result)
+    assert rec.load_eval(result.trace.run_id) is None
+
+
+def test_list_runs_surfaces_eval_fields(
+    tmp_path: Path, minimal_spec: GraphSpec
+) -> None:
+    spec, result = minimal_spec, _run_pipeline(minimal_spec, run_id="list-eval")
+    rec = FileRecorder(root_dir=tmp_path)
+    rec.record(spec=spec, result=result)
+    run_id = result.trace.run_id
+    rec.record_eval(
+        run_id,
+        {
+            **_eval_payload(),
+            "value_per_ktok": 0.65,
+            "fingerprint": {"origin": "invented"},
+            "deterministic": True,
+            "quality_floor_met": True,
+        },
+    )
+    (entry,) = [r for r in rec.list_runs() if r["run_id"] == run_id]
+    assert entry["quality"] == 0.8
+    assert entry["value_per_ktok"] == 0.65
+    assert entry["origin"] == "invented"
+    assert entry["deterministic"] is True
+    assert entry["quality_floor_met"] is True
+
+
+def test_list_runs_omits_eval_fields_when_absent(
+    tmp_path: Path, minimal_spec: GraphSpec
+) -> None:
+    spec, result = minimal_spec, _run_pipeline(minimal_spec, run_id="no-eval-list")
+    rec = FileRecorder(root_dir=tmp_path)
+    rec.record(spec=spec, result=result)
+    (entry,) = rec.list_runs()
+    assert "quality" not in entry

@@ -219,12 +219,17 @@ class _EvalProducer:
 
     def write(self, ctx: ArtifactContext) -> Path:
         assert ctx.eval_result is not None  # guaranteed by applies()
-        path = ctx.directory / self.filename
-        path.write_text(
-            json.dumps(dict(ctx.eval_result), indent=2, default=str),
-            encoding="utf-8",
-        )
-        return path
+        return _write_eval_json(ctx.directory, ctx.eval_result)
+
+
+def _write_eval_json(directory: Path, eval_result: Mapping[str, Any]) -> Path:
+    """Write eval.json to a directory. Shared by _EvalProducer and record_eval()."""
+    path = directory / _EvalProducer.filename
+    path.write_text(
+        json.dumps(dict(eval_result), indent=2, default=str),
+        encoding="utf-8",
+    )
+    return path
 
 
 # Order is preserved in RunRecord.artifacts and matches the historical layout.
@@ -402,6 +407,28 @@ class FileRecorder:
             )
         return json.loads(output_path.read_text(encoding="utf-8"))
 
+    def record_eval(self, run_id: str, eval_result: Mapping[str, Any]) -> Path | None:
+        """Write eval.json into an existing run dir (scoring happens after record()).
+
+        Returns None (writes nothing) when the EVAL artifact isn't selected, so
+        the engine can call this unconditionally for FileRecorder instances.
+        """
+        validate_run_id(run_id)
+        producer = _EvalProducer()
+        if not self._selects(producer):
+            return None
+        directory = self._contained(self._root / run_id, run_id)
+        directory.mkdir(parents=True, exist_ok=True)
+        return _write_eval_json(directory, eval_result)
+
+    def load_eval(self, run_id: str) -> dict[str, Any] | None:
+        """Read eval.json for run_id; None when the run was never scored."""
+        validate_run_id(run_id)
+        path = self._root / run_id / "eval.json"
+        if not path.exists():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+
     def artifact_path(self, run_id: str, name: str) -> Path:
         validate_run_id(run_id)
         name_ok = bool(name) and all(ch in _SAFE_RUN_ID_CHARS for ch in name)
@@ -451,9 +478,23 @@ class FileRecorder:
                 node_count = len(spec_raw.get("nodes", []))
             except (json.JSONDecodeError, OSError):
                 node_count = 0
-            summaries.append(
-                {"run_id": child.name, "status": status, "nodes": node_count}
-            )
+            summary: dict[str, Any] = {
+                "run_id": child.name,
+                "status": status,
+                "nodes": node_count,
+            }
+            eval_path = child / "eval.json"
+            if eval_path.exists():
+                try:
+                    ev = json.loads(eval_path.read_text(encoding="utf-8"))
+                    summary["quality"] = ev.get("quality")
+                    summary["value_per_ktok"] = ev.get("value_per_ktok")
+                    summary["origin"] = (ev.get("fingerprint") or {}).get("origin")
+                    summary["deterministic"] = ev.get("deterministic")
+                    summary["quality_floor_met"] = ev.get("quality_floor_met")
+                except (json.JSONDecodeError, OSError):
+                    pass
+            summaries.append(summary)
         return summaries
 
 
