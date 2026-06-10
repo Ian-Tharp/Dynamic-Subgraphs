@@ -414,15 +414,25 @@ class FileRecorder:
         the engine can call this unconditionally for FileRecorder instances.
         """
         validate_run_id(run_id)
-        producer = _EvalProducer()
-        if not self._selects(producer):
+        if (
+            self._selection is not None
+            and _EvalProducer.filename not in self._selection
+        ):
             return None
         directory = self._contained(self._root / run_id, run_id)
-        directory.mkdir(parents=True, exist_ok=True)
+        if not directory.is_dir():
+            raise FileNotFoundError(
+                f"No recorded run directory for run_id {run_id!r} at {directory}. "
+                "Call record() before record_eval()."
+            )
         return _write_eval_json(directory, eval_result)
 
     def load_eval(self, run_id: str) -> dict[str, Any] | None:
-        """Read eval.json for run_id; None when the run was never scored."""
+        """Read eval.json for run_id; None when the run was never scored.
+
+        Unlike load_output/load_chain, absence is not an error — many runs are
+        recorded without being scored. Raises on corrupt/unreadable JSON.
+        """
         validate_run_id(run_id)
         path = self._root / run_id / "eval.json"
         if not path.exists():

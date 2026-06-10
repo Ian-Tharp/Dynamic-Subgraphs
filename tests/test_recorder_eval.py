@@ -146,3 +146,21 @@ def test_list_runs_omits_eval_fields_when_absent(
     rec.record(spec=spec, result=result)
     (entry,) = rec.list_runs()
     assert "quality" not in entry
+
+
+def test_list_runs_skips_corrupt_eval_json(
+    tmp_path: Path, minimal_spec: GraphSpec
+) -> None:
+    spec, result = minimal_spec, _run_pipeline(minimal_spec, run_id="corrupt-eval")
+    rec = FileRecorder(root_dir=tmp_path)
+    rec.record(spec=spec, result=result)
+    run_id = result.trace.run_id
+    (tmp_path / run_id / "eval.json").write_text("{bad json", encoding="utf-8")
+    (entry,) = rec.list_runs()
+    assert "quality" not in entry
+
+
+def test_record_eval_unrecorded_run_raises(tmp_path: Path) -> None:
+    rec = FileRecorder(root_dir=tmp_path)
+    with pytest.raises(FileNotFoundError):
+        rec.record_eval("never-recorded", _eval_payload())
