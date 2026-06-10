@@ -1,23 +1,24 @@
 """EvalCorpus reader + paired Pareto comparison (Slice 7 PR6)."""
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 from dynamic_subgraphs.corpus import EvalCorpus, OriginComparison
 from dynamic_subgraphs.eval import EvalResult
-from dynamic_subgraphs.eval.types import RunFingerprint
+from dynamic_subgraphs.eval.types import Origin, RunFingerprint
 
 
 def _eval_result(
-    run_id,
+    run_id: str,
     *,
-    origin,
-    quality,
-    tokens,
-    cost=None,
-    dims=("plan_validity", "goal_completion", "cost_efficiency"),
-    rubric="ds.default.v1",
-    floor_met=True,
-):
+    origin: Origin,
+    quality: float,
+    tokens: int,
+    cost: float | None = None,
+    dims: tuple[str, ...] = ("plan_validity", "goal_completion", "cost_efficiency"),
+    rubric: str = "ds.default.v1",
+    floor_met: bool = True,
+) -> EvalResult:
     return EvalResult(
         run_id=run_id,
         scored_at=datetime.now(UTC),
@@ -54,7 +55,7 @@ def _eval_result(
     )
 
 
-def _write(tmp_path, result):
+def _write(tmp_path: Path, result: EvalResult) -> None:
     d = tmp_path / result.run_id
     d.mkdir(parents=True)
     (d / "eval.json").write_text(result.model_dump_json(), encoding="utf-8")
@@ -73,6 +74,19 @@ def test_corrupt_eval_json_skipped(tmp_path) -> None:
     bad.mkdir()
     (bad / "eval.json").write_text("{not json", encoding="utf-8")
     assert [r.run_id for r in EvalCorpus(root_dir=tmp_path).all()] == ["a"]
+
+
+def test_no_fingerprint_loads_but_excluded_from_groups(tmp_path) -> None:
+    _write(tmp_path, _eval_result("a", origin="invented", quality=0.8, tokens=1000))
+    bare = _eval_result("b", origin="routed", quality=0.7, tokens=900)
+    bare = bare.model_copy(update={"fingerprint": None})
+    _write(tmp_path, bare)
+    corpus = EvalCorpus(root_dir=tmp_path)
+    # Still a valid result -> visible in all()...
+    assert [r.run_id for r in corpus.all()] == ["a", "b"]
+    # ...but ungroupable without a fingerprint, so excluded from both groupings.
+    assert [r.run_id for rs in corpus.by_task().values() for r in rs] == ["a"]
+    assert [r.run_id for rs in corpus.by_topology().values() for r in rs] == ["a"]
 
 
 def test_grouping(tmp_path) -> None:

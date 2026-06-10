@@ -12,6 +12,7 @@ verdict, never silently scored.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,10 +21,25 @@ from pydantic import ValidationError
 
 from dynamic_subgraphs.eval import EvalResult
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class OriginComparison:
-    """The paired verdict for one task (grouped by prompt_sha256)."""
+    """Per-run Pareto verdict for one task (grouped by prompt_sha256).
+
+    NOTE — per-run, not per-origin: this compares individual EvalResult runs,
+    not aggregated origin distributions. With N repeats per origin, a single
+    dominant run wins and sets pareto_winner to its origin even if that
+    origin's other runs are weaker. The bench harness (bench.py) is
+    responsible for aggregating across repeats before drawing a
+    distribution-level conclusion.
+
+    NOTE — same-origin: if all runs in the group share one origin,
+    pareto_winner reflects that origin even though no A-vs-B comparison
+    occurred. Callers needing a strict two-origin verdict should check the
+    group spans >= 2 distinct origins before interpreting pareto_winner.
+    """
 
     task_key: str
     runs: tuple[EvalResult, ...]
@@ -33,7 +49,13 @@ class OriginComparison:
 
 
 class EvalCorpus:
-    """Reader over a runs directory's eval.json corpus."""
+    """Reader over a runs directory's eval.json corpus.
+
+    All public methods re-read the directory on each call — no caching. Fine
+    at pilot scale (~100 runs). Callers iterating many tasks should call
+    `by_task()` once and reuse the mapping rather than calling
+    `compare_origins` in a loop (each call re-scans).
+    """
 
     def __init__(self, root_dir: Path | str = "runs") -> None:
         self._root = Path(root_dir)
@@ -47,6 +69,11 @@ class EvalCorpus:
                 json.loads(path.read_text(encoding="utf-8"))
             )
         except (json.JSONDecodeError, ValidationError, OSError):
+            logger.warning(
+                "corpus: skipping unreadable eval.json under %s",
+                path.parent.name,
+                exc_info=True,
+            )
             return None
 
     def all(self) -> Iterator[EvalResult]:
