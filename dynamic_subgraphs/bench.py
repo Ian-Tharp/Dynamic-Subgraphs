@@ -23,6 +23,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from app.errors import DynamicSubgraphsError
 from app.models.graph_spec import GraphSpec
 from dynamic_subgraphs.engine import DynamicSubgraphs, EngineConfig, Model
 from dynamic_subgraphs.eval.types import EvalReference, Origin
@@ -32,7 +33,7 @@ from dynamic_subgraphs.types import Planner
 ARMS: tuple[str, ...] = ("invented", "routed", "authored")
 
 
-class BenchIntegrityError(RuntimeError):
+class BenchIntegrityError(DynamicSubgraphsError, RuntimeError):
     """Raised when a benchmark run would record corrupt evidence.
 
     Two cases abort-fast rather than pollute the verdict: (1) a run that

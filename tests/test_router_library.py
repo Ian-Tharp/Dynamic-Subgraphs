@@ -12,9 +12,7 @@ LIB = Path("docs/evals/router-library-v1")
 SINGLE = Path("docs/evals/fixed-host-graph-v1.json")
 
 
-@pytest.mark.parametrize(
-    "path", sorted(LIB.glob("*.json")), ids=lambda p: p.stem
-)
+@pytest.mark.parametrize("path", sorted(LIB.glob("*.json")), ids=lambda p: p.stem)
 def test_router_specs_validate(path: Path) -> None:
     spec = GraphSpec.model_validate(json.loads(path.read_text(encoding="utf-8")))
     validate_graph_spec(spec)  # raises on invalid
@@ -22,7 +20,10 @@ def test_router_specs_validate(path: Path) -> None:
 
 def test_library_covers_the_task_types() -> None:
     assert {p.stem for p in LIB.glob("*.json")} == {
-        "compare", "research", "summarize", "extract"
+        "compare",
+        "research",
+        "summarize",
+        "extract",
     }
 
 
