@@ -17,7 +17,7 @@
       "inputs": [],
       "outputs": ["analysis_a"],
       "params": {
-        "instruction": "Identify and summarize the strengths and weaknesses of the FIRST subject in the user's comparison request. Focus only on the first subject; do not mention the second. Cover at least: core capabilities or advantages, notable limitations or risks, and any evidence or examples that support your assessment. Write in plain prose, 150-250 words.",
+        "instruction": "Identify and summarize the strengths and weaknesses of the FIRST subject in this comparison request: {prompt} Focus only on the first subject; do not mention the second. Cover at least: core capabilities or advantages, notable limitations or risks, and any evidence or examples that support your assessment. Write in plain prose, 150-250 words.",
         "model": null
       }
     },
@@ -27,7 +27,7 @@
       "inputs": [],
       "outputs": ["analysis_b"],
       "params": {
-        "instruction": "Identify and summarize the strengths and weaknesses of the SECOND subject in the user's comparison request. Focus only on the second subject; do not mention the first. Cover at least: core capabilities or advantages, notable limitations or risks, and any evidence or examples that support your assessment. Write in plain prose, 150-250 words.",
+        "instruction": "Identify and summarize the strengths and weaknesses of the SECOND subject in this comparison request: {prompt} Focus only on the second subject; do not mention the first. Cover at least: core capabilities or advantages, notable limitations or risks, and any evidence or examples that support your assessment. Write in plain prose, 150-250 words.",
         "model": null
       }
     },
@@ -48,7 +48,7 @@
       "inputs": ["combined_evidence"],
       "outputs": ["comparison_result"],
       "params": {
-        "instruction": "Using the combined evidence in upstream state (combined_evidence), produce a direct head-to-head comparison of the two subjects from the user's request. Structure your response as: (1) a comparison table or bullet list of key differences, (2) a clear recommendation identifying which option is preferable and under what conditions, and (3) a one-sentence justification grounded in the evidence. Be decisive — hedge only where the evidence genuinely requires it.",
+        "instruction": "Using the combined evidence in upstream state (combined_evidence), produce a direct head-to-head comparison of the two subjects from the user's request. Structure your response as: (1) a comparison table or bullet list of key differences, (2) a clear recommendation identifying which option is preferable and under what conditions, and (3) a one-sentence justification grounded in the evidence. Be decisive — hedge only where the evidence genuinely requires it. The original request was: {prompt}",
         "model": null
       }
     }

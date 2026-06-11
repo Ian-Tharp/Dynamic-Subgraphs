@@ -26,13 +26,16 @@ def test_library_covers_the_task_types() -> None:
     }
 
 
-def test_grounded_specs_carry_prompt_placeholder() -> None:
-    """The bench harness substitutes {prompt} into tool_call args per task.
+def test_specs_carry_prompt_placeholder() -> None:
+    """The bench harness substitutes {prompt} into tool_call args AND
+    llm_call instructions per task (literal str.replace, not str.format —
+    user prompts may contain braces).
 
-    Without this, the authored arms' searches could never reference the
-    actual task — a strawman baseline. See the harness's fill step (bench.py).
+    The user's prompt never reaches DynamicRunState["values"] on the real
+    runner path, so without substitution the authored arms run prompt-blind —
+    a strawman baseline. See the harness's fill step (bench.py).
     """
-    for path in [LIB / "research.json", SINGLE]:
+    for path in [*sorted(LIB.glob("*.json")), SINGLE]:
         raw = path.read_text(encoding="utf-8")
         assert "{prompt}" in raw, f"{path.name} lost its placeholder"
 

@@ -4,9 +4,9 @@
   "goal": "Produce a faithful, concise summary of the material provided in the user's request.",
   "rationale": "Parsimony is the design point: a single llm_call is the right shape for summarization. The router routes here precisely because summarization requires no fan-out, no retrieval, and no multi-step reasoning — one node with a precise instruction demonstrates the authored baseline.",
   "budget": {
-    "max_nodes": 12,
-    "max_llm_calls": 8,
-    "max_depth": 2,
+    "max_nodes": 2,
+    "max_llm_calls": 1,
+    "max_depth": 1,
     "max_wall_seconds": 90,
     "max_fanout": 64
   },
@@ -17,7 +17,7 @@
       "inputs": [],
       "outputs": ["summary"],
       "params": {
-        "instruction": "Summarize the material provided in the user's request faithfully and concisely; preserve key numbers, names, dates, and caveats; output only the summary.",
+        "instruction": "Summarize the material in the following request faithfully and concisely; preserve key numbers, names, and caveats; output only the summary. Request: {prompt}",
         "model": null
       }
     }

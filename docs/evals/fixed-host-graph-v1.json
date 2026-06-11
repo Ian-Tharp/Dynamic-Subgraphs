@@ -2,7 +2,7 @@
   "schema_version": 1,
   "graph_id": "fixed-host-graph-v1",
   "goal": "Run a single web search then synthesize a grounded answer — Arm C sanity floor regardless of task type.",
-  "rationale": "One frozen linear shape: web_search -> synthesize. This is the simplest grounded graph that can be run against any task. Its purpose is the sanity floor: if the dynamic planner (Arm A) or the router library (Arm B) cannot beat a single-search linear shape on eval metrics, those arms have no value. The shape is intentionally unsophisticated. The query carries a {prompt} placeholder the bench harness substitutes with the task prompt before the run, so the search is grounded in the actual task rather than a fixed string.",
+  "rationale": "One frozen linear shape: web_search -> synthesize. This is the simplest grounded graph that can be run against any task. Its purpose is the sanity floor: if the dynamic planner (Arm A) or the router library (Arm B) cannot beat a single-search linear shape on eval metrics, those arms have no value. The shape is intentionally unsophisticated. Both the search query and the synthesize instruction carry a {prompt} placeholder the bench harness literal-substitutes (str.replace, not str.format) with the task prompt before the run — the user's prompt never reaches DynamicRunState values on the real runner path, so without substitution the graph would run prompt-blind.",
   "budget": {
     "max_nodes": 12,
     "max_llm_calls": 8,
@@ -30,7 +30,7 @@
       "inputs": ["search_results"],
       "outputs": ["answer"],
       "params": {
-        "instruction": "Using the web search results provided in upstream state (search_results) alongside the user's original request, produce a direct, grounded answer. Preserve key facts, numbers, and source references from the search results. Keep the answer concise and focused.",
+        "instruction": "Using the web search results provided in upstream state (search_results), produce a direct, grounded answer to the user's original request: {prompt} Preserve key facts, numbers, and source references from the search results. Keep the answer concise and focused.",
         "model": null
       }
     }
