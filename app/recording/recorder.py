@@ -14,6 +14,7 @@ Layout:
         graph.mmd     -- Mermaid diagram of the topology
         summary.md    -- human-readable summary
         prompt.md     -- optional, only written if a prompt was provided
+        eval.json     -- optional, only written when eval_gate is configured
       <chain_id>/
         chain.json    -- emitted by record_chain() for iterative runs;
                          sits alongside <chain_id>_iter_N/ directories
@@ -23,6 +24,7 @@ Layout:
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -97,6 +99,9 @@ class ArtifactContext:
     spec: GraphSpec
     result: ExecutionResult
     prompt: str | None
+    # Pre-serialized EvalResult mapping (the eval layer lives in the SDK facade;
+    # app/ must not import it — spec layering rule). None = no score.
+    eval_result: Mapping[str, Any] | None = None
 
 
 class ArtifactProducer(Protocol):
@@ -205,6 +210,28 @@ class _SummaryProducer:
         return path
 
 
+class _EvalProducer:
+    key = "eval"
+    filename = "eval.json"
+
+    def applies(self, ctx: ArtifactContext) -> bool:
+        return ctx.eval_result is not None
+
+    def write(self, ctx: ArtifactContext) -> Path:
+        assert ctx.eval_result is not None  # guaranteed by applies()
+        return _write_eval_json(ctx.directory, ctx.eval_result)
+
+
+def _write_eval_json(directory: Path, eval_result: Mapping[str, Any]) -> Path:
+    """Write eval.json to a directory. Shared by _EvalProducer and record_eval()."""
+    path = directory / _EvalProducer.filename
+    path.write_text(
+        json.dumps(dict(eval_result), indent=2, default=str),
+        encoding="utf-8",
+    )
+    return path
+
+
 # Order is preserved in RunRecord.artifacts and matches the historical layout.
 DEFAULT_PRODUCERS: tuple[ArtifactProducer, ...] = (
     _SpecProducer(),
@@ -213,6 +240,7 @@ DEFAULT_PRODUCERS: tuple[ArtifactProducer, ...] = (
     _MermaidProducer(),
     _PromptProducer(),
     _SummaryProducer(),
+    _EvalProducer(),
 )
 
 
@@ -379,6 +407,38 @@ class FileRecorder:
             )
         return json.loads(output_path.read_text(encoding="utf-8"))
 
+    def record_eval(self, run_id: str, eval_result: Mapping[str, Any]) -> Path | None:
+        """Write eval.json into an existing run dir (scoring happens after record()).
+
+        Returns None (writes nothing) when the EVAL artifact isn't selected, so
+        the engine can call this unconditionally for FileRecorder instances.
+        """
+        validate_run_id(run_id)
+        if (
+            self._selection is not None
+            and _EvalProducer.filename not in self._selection
+        ):
+            return None
+        directory = self._contained(self._root / run_id, run_id)
+        if not directory.is_dir():
+            raise FileNotFoundError(
+                f"No recorded run directory for run_id {run_id!r} at {directory}. "
+                "Call record() before record_eval()."
+            )
+        return _write_eval_json(directory, eval_result)
+
+    def load_eval(self, run_id: str) -> dict[str, Any] | None:
+        """Read eval.json for run_id; None when the run was never scored.
+
+        Unlike load_output/load_chain, absence is not an error — many runs are
+        recorded without being scored. Raises on corrupt/unreadable JSON.
+        """
+        validate_run_id(run_id)
+        path = self._root / run_id / "eval.json"
+        if not path.exists():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+
     def artifact_path(self, run_id: str, name: str) -> Path:
         validate_run_id(run_id)
         name_ok = bool(name) and all(ch in _SAFE_RUN_ID_CHARS for ch in name)
@@ -428,9 +488,23 @@ class FileRecorder:
                 node_count = len(spec_raw.get("nodes", []))
             except (json.JSONDecodeError, OSError):
                 node_count = 0
-            summaries.append(
-                {"run_id": child.name, "status": status, "nodes": node_count}
-            )
+            summary: dict[str, Any] = {
+                "run_id": child.name,
+                "status": status,
+                "nodes": node_count,
+            }
+            eval_path = child / "eval.json"
+            if eval_path.exists():
+                try:
+                    ev = json.loads(eval_path.read_text(encoding="utf-8"))
+                    summary["quality"] = ev.get("quality")
+                    summary["value_per_ktok"] = ev.get("value_per_ktok")
+                    summary["origin"] = (ev.get("fingerprint") or {}).get("origin")
+                    summary["deterministic"] = ev.get("deterministic")
+                    summary["quality_floor_met"] = ev.get("quality_floor_met")
+                except (json.JSONDecodeError, OSError):
+                    pass
+            summaries.append(summary)
         return summaries
 
 

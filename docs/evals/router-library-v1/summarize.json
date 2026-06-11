@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "graph_id": "router-summarize-v1",
+  "goal": "Produce a faithful, concise summary of the material provided in the user's request.",
+  "rationale": "Parsimony is the design point: a single llm_call is the right shape for summarization. The router routes here precisely because summarization requires no fan-out, no retrieval, and no multi-step reasoning — one node with a precise instruction demonstrates the authored baseline.",
+  "budget": {
+    "max_nodes": 2,
+    "max_llm_calls": 1,
+    "max_depth": 1,
+    "max_wall_seconds": 90,
+    "max_fanout": 64
+  },
+  "nodes": [
+    {
+      "id": "summarize",
+      "kind": "llm_call",
+      "inputs": [],
+      "outputs": ["summary"],
+      "params": {
+        "instruction": "Summarize the material in the following request faithfully and concisely; preserve key numbers, names, and caveats; output only the summary. Request: {prompt}",
+        "model": null
+      }
+    }
+  ],
+  "edges": [
+    {"from": "START", "to": "summarize"},
+    {"from": "summarize", "to": "END"}
+  ],
+  "metadata": {
+    "planner_model": null,
+    "purpose": "Arm B router library — summarize task type",
+    "created_at": null
+  }
+}

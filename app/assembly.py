@@ -67,6 +67,10 @@ class RunConfig:
     reducer_model: ModelRef | None = None
     subagent_model: ModelRef | None = None
     judge_model: ModelRef | None = None
+    # Benchmark fixed-arm seam (Slice 7 PR7): when set, planning is skipped and
+    # this hand-authored spec runs on whatever runner path `planner` selects —
+    # "llm" = REAL workers (the router/authored benchmark arms), "mock" = echo.
+    fixed_spec: GraphSpec | None = None
 
     def __post_init__(self) -> None:
         provider = self.provider.strip().lower()
@@ -158,6 +162,8 @@ def _build_planner(
     chat_callbacks: list[Any] | None = None,
     planner_guidance: str | None = None,
 ) -> Planner:
+    if config.fixed_spec is not None:
+        return StaticPlanner(config.fixed_spec)
     if config.planner == "llm":
         ref = _attach_callbacks(config.planner_ref, chat_callbacks)
         provider = model_providers.get(ref.provider)

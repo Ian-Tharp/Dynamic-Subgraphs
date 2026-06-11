@@ -33,6 +33,7 @@ replay; leave it at the default in production / library use.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
@@ -51,6 +52,14 @@ from app.runtime import (
     ProviderRegistry,
     default_model_providers,
 )
+from dynamic_subgraphs.eval.types import (
+    EvalContext,
+    EvalGate,
+    EvalReference,
+    EvalResult,
+    EvalTags,
+    Origin,
+)
 from dynamic_subgraphs.recording import Artifact, Recording
 from dynamic_subgraphs.types import (
     MODEL_ROLES,
@@ -62,6 +71,8 @@ from dynamic_subgraphs.types import (
     RunStatus,
 )
 from dynamic_subgraphs.usage import TokenUsage
+
+logger = logging.getLogger(__name__)
 
 # `Model` is the public, SDK-facing name for a concrete model choice.
 Model = ModelRef
@@ -256,6 +267,7 @@ class RunResult:
     cost: float | None = None
     effective_budget: dict[str, Any] | None = None
     plan_attempts: int = 1
+    eval: EvalResult | None = None
 
     @property
     def ok(self) -> bool:
@@ -286,6 +298,7 @@ class RunResult:
             "cost": self.cost,
             "effective_budget": self.effective_budget,
             "plan_attempts": self.plan_attempts,
+            "eval": self.eval.model_dump(mode="json") if self.eval else None,
         }
 
     @classmethod
@@ -392,6 +405,11 @@ class EngineConfig:
     # over deep recursion for worldbuilding" — without owning the whole prompt.
     # None leaves the default planner prompt unchanged.
     planner_guidance: str | None = None
+    # Opt-in eval layer (Slice 7). None == OFF: nothing scores a run, no
+    # eval.json is written, RunResult.eval stays None.
+    eval_gate: EvalGate | None = None
+    # Default benchmark tags applied to every run; per-call run() kwargs win.
+    eval_tags: EvalTags | None = None
 
     def model_selection(self) -> ModelSelection:
         """The per-role `ModelSelection` this config resolves to."""
@@ -440,6 +458,7 @@ class DynamicSubgraphs:
             "statuses": list(RUN_STATUSES),
             "structured_methods": list(STRUCTURED_METHODS),
             "model_constructors": list(MODEL_CONSTRUCTORS),
+            "eval_gates": ["deterministic"],
         }
 
     def __init__(self, config: EngineConfig | None = None) -> None:
@@ -475,6 +494,10 @@ class DynamicSubgraphs:
         reducer_model: Model | None = None,
         subagent_model: Model | None = None,
         judge_model: Model | None = None,
+        task_id: str | None = None,
+        origin: Origin | None = None,
+        reference: EvalReference | None = None,
+        fixed_spec: GraphSpec | None = None,
     ) -> RunResult:
         """Plan, run, and record one dynamic subgraph for `prompt`.
 
@@ -489,6 +512,15 @@ class DynamicSubgraphs:
             model / planner_model / worker_model / reducer_model /
             subagent_model / judge_model: per-run model overrides. An unset
                 role falls back to the worker model, then to the base `model`.
+            task_id: benchmark task identifier threaded into the eval gate;
+                overrides `EngineConfig.eval_tags.task_id` for this call.
+            origin: which arm produced this run ("invented", "authored",
+                "routed"); overrides `EngineConfig.eval_tags.origin`.
+            reference: per-task gold/checklist for reference-anchored scoring;
+                overrides `EngineConfig.eval_tags.reference`.
+            fixed_spec: run this hand-authored, registry-validated `GraphSpec`
+                instead of planning — the benchmark's authored/routed arms;
+                combine with the default planner="llm" for real LLM workers.
 
         Returns:
             A `RunResult` — check `.ok`, read `.response`/`.values`, inspect
@@ -519,6 +551,8 @@ class DynamicSubgraphs:
             )
         )
         config = selection.to_run_config(planner or self._planner)
+        if fixed_spec is not None:
+            config = replace(config, fixed_spec=fixed_spec)
         run_id = run_id or f"run-{uuid.uuid4().hex[:12]}"
 
         # Recording is opt-in and granular. By default (none) the engine
@@ -558,10 +592,78 @@ class DynamicSubgraphs:
 
         usage = TokenUsage.from_handler(usage_handler)
         cost = _compute_cost(usage, self._pricing)
-        return RunResult._from_supervisor(
+        run_result = RunResult._from_supervisor(
             result,
             runs_dir=self._runs_dir,
             run_id=run_id,
             usage=usage,
             cost=cost,
         )
+        return replace(
+            run_result,
+            eval=self._score(
+                run_result=run_result,
+                supervisor_result=result,
+                config=config,
+                recorder=recorder,
+                prompt=prompt,
+                task_id=task_id,
+                origin=origin,
+                reference=reference,
+            ),
+        )
+
+    def _score(
+        self,
+        *,
+        run_result: RunResult,
+        supervisor_result: Any,
+        config: RunConfig,
+        recorder: Any,
+        prompt: str,
+        task_id: str | None,
+        origin: Origin | None,
+        reference: EvalReference | None,
+    ) -> EvalResult | None:
+        """Score a completed run; never raises (mirrors _make_record_node).
+
+        Skips scoring when planning/validation failed (no spec to score) — the
+        benchmark harness synthesizes quality=0 rows for those itself.
+        """
+        gate = self._config.eval_gate
+        if gate is None:
+            return None
+        spec = supervisor_result.validated_spec
+        exec_result = supervisor_result.result
+        if spec is None or exec_result is None:
+            return None
+        defaults = self._config.eval_tags or EvalTags()
+        planner_name = config.planner_ref.model if config.planner == "llm" else None
+        try:
+            ctx = EvalContext(
+                run_id=run_result.run_id,
+                spec=spec,
+                result=exec_result,
+                prompt=prompt,
+                status=run_result.status,
+                usage=run_result.usage,
+                cost=run_result.cost,
+                origin=origin if origin is not None else defaults.origin,
+                task_id=task_id if task_id is not None else defaults.task_id,
+                reference=reference if reference is not None else defaults.reference,
+                planner_model_name=planner_name,
+            )
+            eval_result = gate.evaluate(ctx)
+            if isinstance(recorder, FileRecorder):
+                recorder.record_eval(
+                    run_result.run_id, eval_result.model_dump(mode="json")
+                )
+            return eval_result
+        except Exception:  # a broken gate must never fail the run
+            logger.warning(
+                "eval gate %r failed for run %r — scoring skipped",
+                getattr(gate, "name", type(gate).__name__),
+                run_result.run_id,
+                exc_info=True,
+            )
+            return None

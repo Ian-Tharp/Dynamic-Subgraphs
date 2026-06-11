@@ -29,6 +29,8 @@ class Artifact(StrEnum):
     Tips:
         - `MERMAID` (`graph.mmd`) is the visual of the generated graph.
         - `SPEC` (`spec.json`) is required by `resume`/`replay`.
+        - `EVAL` (`eval.json`) is the persisted `EvalResult` score; written
+          only when `EngineConfig.eval_gate` is configured.
         - `EMITTED` toggles whether `emit_artifact` node outputs are written
           to disk (under ``runs/<run_id>/artifacts/``) vs kept in memory.
           It has no single filename, so its value is the sentinel "emitted".
@@ -40,6 +42,7 @@ class Artifact(StrEnum):
     MERMAID = "graph.mmd"
     SUMMARY = "summary.md"
     PROMPT = "prompt.md"
+    EVAL = "eval.json"
     EMITTED = "emitted"
 
 
@@ -118,13 +121,20 @@ class Recording:
         return cls(frozenset({Artifact.SPEC, Artifact.OUTPUT}))
 
     @classmethod
+    def evaluated(cls) -> Recording:
+        """Replayable + trace + the eval score: spec, trace, output, eval.json."""
+        return cls(
+            frozenset({Artifact.SPEC, Artifact.TRACE, Artifact.OUTPUT, Artifact.EVAL})
+        )
+
+    @classmethod
     def preset_names(cls) -> tuple[str, ...]:
         """The preset constructor names — the single source for `capabilities()`.
 
         Co-located with the presets above so the agent-facing capability list can't
         drift from the methods that implement it (a guard test asserts the match).
         """
-        return ("none", "all", "debug", "visual_only", "replayable")
+        return ("none", "all", "debug", "visual_only", "replayable", "evaluated")
 
     @classmethod
     def coerce(cls, value: object) -> Recording:

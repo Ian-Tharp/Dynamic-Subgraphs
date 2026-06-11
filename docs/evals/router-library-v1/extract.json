@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "graph_id": "router-extract-v1",
+  "goal": "Extract exactly the fields requested by the user from the provided material and return them as a strict JSON object.",
+  "rationale": "Parsimony matches summarize: extraction is a single focused transformation with a tight output contract. No retrieval or fan-out is needed — the user supplies the material and the field list. The instruction enforces strict JSON output so downstream consumers can parse it without post-processing.",
+  "budget": {
+    "max_nodes": 2,
+    "max_llm_calls": 1,
+    "max_depth": 1,
+    "max_wall_seconds": 90,
+    "max_fanout": 64
+  },
+  "nodes": [
+    {
+      "id": "extract_fields",
+      "kind": "llm_call",
+      "inputs": [],
+      "outputs": ["extracted"],
+      "params": {
+        "instruction": "Extract exactly the fields requested by the user from the provided material and return them as a strict JSON object; no narration, no markdown fencing, no extra keys — only the requested fields and their extracted values. Request: {prompt}",
+        "model": null
+      }
+    }
+  ],
+  "edges": [
+    {"from": "START", "to": "extract_fields"},
+    {"from": "extract_fields", "to": "END"}
+  ],
+  "metadata": {
+    "planner_model": null,
+    "purpose": "Arm B router library — extract task type",
+    "created_at": null
+  }
+}
