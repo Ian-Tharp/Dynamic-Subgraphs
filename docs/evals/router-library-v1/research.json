@@ -2,7 +2,7 @@
   "schema_version": 1,
   "graph_id": "router-research-v1",
   "goal": "Run three complementary web searches in parallel, concatenate results, then synthesize a grounded research answer from live evidence.",
-  "rationale": "Shape choice: Option B (3 parallel tool_call web_search nodes with static query strings), NOT Option A (llm_call producing sub-queries -> parallel_map). Rationale: tool_call args are static JSON embedded at author time; the web_search runner reads query from args.query which cannot reference runtime state. Three angle-specific static queries provide better coverage than one broad query, and the static-query constraint is guaranteed safe — no dependency on LLM output to form queries. The synthesize llm_call sees all three result sets via upstream state and performs the quality analytical work. Reduce strategy is 'concat' (not 'llm_summarize') for offline/mock compatibility.",
+  "rationale": "Shape choice: Option B (3 parallel tool_call web_search nodes), NOT Option A (llm_call producing sub-queries -> parallel_map). tool_call args are static JSON embedded at author time — the runtime cannot reference state from args — so queries carry a {prompt} placeholder the bench harness substitutes with the task prompt before the run (dynamic parameters, legitimate for a router baseline; without it grounded tasks would be auto-lost and this arm a strawman). Three angle-suffixed queries (plain, recent developments, limitations/criticism) give coverage breadth without depending on LLM output to form queries. The synthesize llm_call sees all three result sets via upstream state and performs the quality analytical work. Reduce strategy is 'concat' (not 'llm_summarize') for offline/mock compatibility.",
   "budget": {
     "max_nodes": 12,
     "max_llm_calls": 8,
@@ -19,7 +19,7 @@
       "params": {
         "tool_name": "web_search",
         "args": {
-          "query": "research overview key facts",
+          "query": "{prompt}",
           "num_results": 5
         }
       }
@@ -32,7 +32,7 @@
       "params": {
         "tool_name": "web_search",
         "args": {
-          "query": "latest developments 2024 2025",
+          "query": "{prompt} recent developments",
           "num_results": 5
         }
       }
@@ -45,7 +45,7 @@
       "params": {
         "tool_name": "web_search",
         "args": {
-          "query": "analysis criticism limitations concerns",
+          "query": "{prompt} limitations criticism",
           "num_results": 5
         }
       }

@@ -26,6 +26,17 @@ def test_library_covers_the_task_types() -> None:
     }
 
 
+def test_grounded_specs_carry_prompt_placeholder() -> None:
+    """The bench harness substitutes {prompt} into tool_call args per task.
+
+    Without this, the authored arms' searches could never reference the
+    actual task — a strawman baseline. See the harness's fill step (bench.py).
+    """
+    for path in [LIB / "research.json", SINGLE]:
+        raw = path.read_text(encoding="utf-8")
+        assert "{prompt}" in raw, f"{path.name} lost its placeholder"
+
+
 def test_single_fixed_graph_validates() -> None:
     spec = GraphSpec.model_validate(json.loads(SINGLE.read_text(encoding="utf-8")))
     validate_graph_spec(spec)
