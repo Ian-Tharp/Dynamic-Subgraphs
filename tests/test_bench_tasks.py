@@ -1,6 +1,5 @@
 """The pilot task pack is loadable, referenced, heterogeneous (PR8c)."""
 
-import json
 from pathlib import Path
 
 from dynamic_subgraphs.bench import BenchTask, RouterLibrary, run_benchmark
@@ -23,8 +22,12 @@ def test_references_are_mandatory_and_well_formed() -> None:
         required = [*t.reference.checklist, *t.reference.must_include]
         assert required, f"{t.task_id}: empty reference"
         for item in required:
-            assert item == item.lower(), f"{t.task_id}: checklist must be lowercase (substring matching)"
-            assert len(item) <= 40, f"{t.task_id}: checklist items must be short surface tokens"
+            assert item == item.lower(), (
+                f"{t.task_id}: checklist must be lowercase (substring matching)"
+            )
+            assert len(item) <= 40, (
+                f"{t.task_id}: checklist items must be short surface tokens"
+            )
 
 
 def test_grounding_flags_split() -> None:
@@ -44,12 +47,47 @@ def test_no_brace_literals_in_prompts() -> None:
 def test_self_contained_material_tasks() -> None:
     by_id = {t.task_id: t for t in BenchTask.from_jsonl(PACK)}
     summarize = next(t for t in by_id.values() if t.task_type == "summarize")
-    assert len(summarize.prompt) > 1500, "summarize material must be inline (~400-600 words)"
+    assert len(summarize.prompt) > 1500, (
+        "summarize material must be inline (~400-600 words)"
+    )
     extract = next(t for t in by_id.values() if t.task_type == "extract")
     assert len(extract.prompt) > 300, "extract record must be inline"
     # checklist values must actually appear in the extract material (they're the answers)
     for item in extract.reference.checklist:
-        assert item in extract.prompt.lower(), f"extract checklist {item!r} not in material"
+        assert item in extract.prompt.lower(), (
+            f"extract checklist {item!r} not in material"
+        )
+
+
+# The router's research spec appends these fixed query suffixes (see
+# docs/evals/router-library-v1/research.json); a checklist item that is a
+# substring of either could score free points off query text echoed into
+# search results rather than off genuine answer content.
+_ROUTER_QUERY_SUFFIXES = ("recent developments", "limitations criticism")
+
+
+def test_question_tasks_avoid_prompt_echo() -> None:
+    """Checklist items echoed in the prompt are free points for lazy answers.
+
+    Question-style tasks (compare/research/plan) may keep at most 2 deliberate
+    subject anchors; everything else must be a term only a genuine answer
+    surfaces. Extract/summarize are exempt — their material is inline by
+    design. Research checklists additionally must not collide with the
+    router's fixed query suffixes.
+    """
+    for t in BenchTask.from_jsonl(PACK):
+        if t.task_type not in ("compare", "research", "plan"):
+            continue
+        prompt = t.prompt.lower()
+        echoed = [item for item in t.reference.checklist if item in prompt]
+        assert len(echoed) <= 2, f"{t.task_id}: prompt-echoed checklist items {echoed}"
+        if t.task_type == "research":
+            for item in t.reference.checklist:
+                for suffix in _ROUTER_QUERY_SUFFIXES:
+                    assert item not in suffix, (
+                        f"{t.task_id}: checklist item {item!r} is a substring of "
+                        f"router query suffix {suffix!r}"
+                    )
 
 
 def test_pack_runs_offline_through_harness(tmp_path: Path) -> None:
