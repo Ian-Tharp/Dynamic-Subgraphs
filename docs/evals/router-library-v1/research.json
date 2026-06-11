@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "graph_id": "router-research-v1",
+  "goal": "Run three complementary web searches in parallel, concatenate results, then synthesize a grounded research answer from live evidence.",
+  "rationale": "Shape choice: Option B (3 parallel tool_call web_search nodes with static query strings), NOT Option A (llm_call producing sub-queries -> parallel_map). Rationale: tool_call args are static JSON embedded at author time; the web_search runner reads query from args.query which cannot reference runtime state. Three angle-specific static queries provide better coverage than one broad query, and the static-query constraint is guaranteed safe — no dependency on LLM output to form queries. The synthesize llm_call sees all three result sets via upstream state and performs the quality analytical work. Reduce strategy is 'concat' (not 'llm_summarize') for offline/mock compatibility.",
+  "budget": {
+    "max_nodes": 12,
+    "max_llm_calls": 8,
+    "max_depth": 2,
+    "max_wall_seconds": 90,
+    "max_fanout": 64
+  },
+  "nodes": [
+    {
+      "id": "search_primary",
+      "kind": "tool_call",
+      "inputs": [],
+      "outputs": ["results_primary"],
+      "params": {
+        "tool_name": "web_search",
+        "args": {
+          "query": "research overview key facts",
+          "num_results": 5
+        }
+      }
+    },
+    {
+      "id": "search_recent",
+      "kind": "tool_call",
+      "inputs": [],
+      "outputs": ["results_recent"],
+      "params": {
+        "tool_name": "web_search",
+        "args": {
+          "query": "latest developments 2024 2025",
+          "num_results": 5
+        }
+      }
+    },
+    {
+      "id": "search_critical",
+      "kind": "tool_call",
+      "inputs": [],
+      "outputs": ["results_critical"],
+      "params": {
+        "tool_name": "web_search",
+        "args": {
+          "query": "analysis criticism limitations concerns",
+          "num_results": 5
+        }
+      }
+    },
+    {
+      "id": "combine_search_results",
+      "kind": "reduce",
+      "inputs": ["results_primary", "results_recent", "results_critical"],
+      "outputs": ["all_search_results"],
+      "params": {
+        "strategy": "concat",
+        "input_keys": ["results_primary", "results_recent", "results_critical"],
+        "output_key": "all_search_results"
+      }
+    },
+    {
+      "id": "synthesize_research",
+      "kind": "llm_call",
+      "inputs": ["all_search_results"],
+      "outputs": ["research_answer"],
+      "params": {
+        "instruction": "Using the combined web search evidence in upstream state (all_search_results), write a thorough, grounded answer to the user's research question. Structure your response as: (1) a concise direct answer to the question, (2) key supporting evidence drawn from the search results (cite specific facts, numbers, or sources where available), (3) important caveats, limitations, or conflicting perspectives found in the evidence. Preserve key numbers, names, dates, and qualifications. Write in clear prose, 250-400 words.",
+        "model": null
+      }
+    }
+  ],
+  "edges": [
+    {"from": "START", "to": "search_primary"},
+    {"from": "START", "to": "search_recent"},
+    {"from": "START", "to": "search_critical"},
+    {"from": "search_primary", "to": "combine_search_results"},
+    {"from": "search_recent", "to": "combine_search_results"},
+    {"from": "search_critical", "to": "combine_search_results"},
+    {"from": "combine_search_results", "to": "synthesize_research"},
+    {"from": "synthesize_research", "to": "END"}
+  ],
+  "metadata": {
+    "planner_model": null,
+    "purpose": "Arm B router library — research task type",
+    "created_at": null
+  }
+}

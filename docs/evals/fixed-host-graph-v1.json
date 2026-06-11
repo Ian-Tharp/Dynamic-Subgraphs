@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "graph_id": "fixed-host-graph-v1",
+  "goal": "Run a single web search then synthesize a grounded answer — Arm C sanity floor regardless of task type.",
+  "rationale": "One frozen linear shape: web_search -> synthesize. This is the simplest grounded graph that can be run against any task. Its purpose is the sanity floor: if the dynamic planner (Arm A) or the router library (Arm B) cannot beat a single-search linear shape on eval metrics, those arms have no value. The shape is intentionally unsophisticated.",
+  "budget": {
+    "max_nodes": 12,
+    "max_llm_calls": 8,
+    "max_depth": 2,
+    "max_wall_seconds": 90,
+    "max_fanout": 64
+  },
+  "nodes": [
+    {
+      "id": "web_search_task",
+      "kind": "tool_call",
+      "inputs": [],
+      "outputs": ["search_results"],
+      "params": {
+        "tool_name": "web_search",
+        "args": {
+          "query": "research overview key facts",
+          "num_results": 5
+        }
+      }
+    },
+    {
+      "id": "synthesize_answer",
+      "kind": "llm_call",
+      "inputs": ["search_results"],
+      "outputs": ["answer"],
+      "params": {
+        "instruction": "Using the web search results provided in upstream state (search_results) alongside the user's original request, produce a direct, grounded answer. Preserve key facts, numbers, and source references from the search results. Keep the answer concise and focused.",
+        "model": null
+      }
+    }
+  ],
+  "edges": [
+    {"from": "START", "to": "web_search_task"},
+    {"from": "web_search_task", "to": "synthesize_answer"},
+    {"from": "synthesize_answer", "to": "END"}
+  ],
+  "metadata": {
+    "planner_model": null,
+    "purpose": "Arm C fixed sanity floor — single linear web_search -> synthesize",
+    "created_at": null
+  }
+}
