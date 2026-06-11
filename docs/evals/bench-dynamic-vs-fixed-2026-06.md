@@ -122,19 +122,43 @@ rules these score quality 0 (robustness is part of the thesis).
    summarize) to 35 (research-1) — the main run should size repeats per task
    type, not uniformly.
 
-## 4. Pre-registered decision rule (TO BE REGISTERED — do not run the main benchmark before this section is complete and committed)
+## 4. Pre-registered decision rule — REGISTERED 2026-06-11 (Ian + Claude, with §3 pilot data in hand, before any main-run spend; this section is now frozen)
 
-Registered with pilot data in hand, before main-run spend:
+**Arms (main run).** Two dynamic sub-arms, both judged against the router:
+- **A1** = nano planner + nano workers ("as deployed cheaply" — pilot continuity)
+- **A2** = stronger planner (model pinned at main-run launch from the SDK's
+  recommended tier) + nano workers (the SDK's own documented recipe — the
+  steelman). Each sub-arm gets its own §5 verdict line; the headline thesis
+  verdict is **A2 vs B** (the thesis's best case), with A1 reported alongside
+  (the deployment-reality case).
 
+**Rule (per dynamic sub-arm vs Arm B):**
 - Eligibility: `quality_floor_met` (floor **0.6**, locked 2026-06-03).
-- Decision variable: per-task paired Pareto (quality, cost) — A vs B.
-- KEEP threshold: ____ (proposed: dynamic Pareto-wins ≥60% of floor-eligible tasks with a paired CI excluding no-effect, on full cost).
-- KILL condition: ____ (proposed: router Pareto-dominates at the same margin even on worker-only cost — templating wouldn't save it).
-- INCONCLUSIVE → expand batch to ____ tasks (proposed 24–40, 4–6 per type).
-- CI / test method: ____ (proposed: paired sign test + bootstrap CI on the per-task Pareto-win indicator).
-- Penalty-form sensitivity cut: λ = ____.
-- Main-run repeats: from §3's derived-repeats table: ____.
+- Decision variable: per-task paired Pareto on (quality, **full cost** —
+  planner included). Worker-only cost is the registered sensitivity cut: a
+  dynamic arm that loses on full cost but wins worker-only is recorded as
+  **INCONCLUSIVE-leaning-template-cache**, never KEEP.
+- **KEEP** iff the dynamic arm Pareto-wins **≥60%** of floor-eligible tasks
+  AND a paired sign test rejects no-effect at **p<0.05** (bootstrap CI on the
+  per-task win indicator reported, 10,000 resamples).
+- **KILL** iff the router Pareto-dominates the dynamic arm at the same bar
+  (≥60%, p<0.05) **even on worker-only cost** (templating wouldn't save it).
+- **INCONCLUSIVE** otherwise → expand the batch (same rule, no re-registration).
+- Penalty-form sensitivity cut (secondary, never decisive):
+  `adjusted = quality − 0.05·(total_tokens/10,000)` (λ = 0.05 per 10k tokens).
+- Verdicts reported **per headline** (structural; reference-anchored goal) and
+  per stratum (see pack) — never on blended quality alone (locked 2026-06-09).
+
+**Main-run pack & sizing:** 24 tasks, stratified — 4 per type across 6 types,
+including a **topology-eliciting stratum** (multi-source synthesis /
+data-dependent fan-out tasks the pilot pack lacked), authored under the same
+de-echo + reference rules as the pilot pack (echo-guard test extended to the
+new pack). Per-task repeats from pilot-CV derivation (§3 table; re-derived per
+new task type at pilot rates), **capped at 20**. Per-stratum verdict lines so
+"simple tasks favor routers, complex tasks favor planning" is visible if true.
+Estimated ~1,800–2,600 runs ≈ $4–8 at pilot rates (4 arms incl. A2).
 
 ## 5. Main run
 
-Not started. Blocked on §4 by design.
+Not started. Pack authoring + A2 planner pinning are the remaining
+prerequisites; the rule above is frozen.
