@@ -25,6 +25,15 @@ from __future__ import annotations
 
 from app.policy import ExecutionPolicy
 from app.runtime import ModelRef
+from dynamic_subgraphs.bench import (
+    ARMS,
+    ArmRunRow,
+    BenchReport,
+    BenchTask,
+    RouterLibrary,
+    fill_spec,
+    run_benchmark,
+)
 from dynamic_subgraphs.corpus import EvalCorpus, OriginComparison
 from dynamic_subgraphs.engine import (
     DynamicSubgraphs,
@@ -58,12 +67,16 @@ from dynamic_subgraphs.types import (
 )
 
 __all__ = [
+    "ARMS",
     "ARTIFACT_KINDS",
     "MODEL_ROLES",
     "PLANNERS",
     "RUN_STATUSES",
     "STRUCTURED_METHODS",
+    "ArmRunRow",
     "Artifact",
+    "BenchReport",
+    "BenchTask",
     "DeterministicEvalGate",
     "DynamicSubgraphs",
     "EngineConfig",
@@ -80,6 +93,7 @@ __all__ = [
     "OriginComparison",
     "Planner",
     "Recording",
+    "RouterLibrary",
     "RunFingerprint",
     "RunResult",
     "RunStatus",
@@ -87,4 +101,6 @@ __all__ = [
     "StructuredMethod",
     "TokenUsage",
     "build_deterministic_eval_gate",
+    "fill_spec",
+    "run_benchmark",
 ]
