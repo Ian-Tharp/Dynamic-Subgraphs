@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+from langchain_core.messages import HumanMessage
+
 from app.models import GraphSpec, NodeKind
 from dynamic_subgraphs import (
     DeterministicEvalGate,
@@ -18,6 +21,7 @@ from dynamic_subgraphs import (
 )
 from dynamic_subgraphs.bench import (
     ARMS,
+    BenchIntegrityError,
     BenchTask,
     RouterLibrary,
     fill_spec,
@@ -205,6 +209,15 @@ def test_run_benchmark_offline(tmp_path: Path) -> None:
     assert payload["bench_id"] == "test-offline"
     assert "per_task_cv" in payload["pilot"]
 
+    # Thinness stats: every per-task entry exposes samples + dropped_none so
+    # a thin CV (e.g. mock runs with 0 tokens -> all None vpktok) is visible.
+    per_task_cv = payload["pilot"]["per_task_cv"]
+    assert set(per_task_cv) == {"t-compare", "t-summarize"}
+    for entry in per_task_cv.values():
+        assert "samples" in entry
+        assert "dropped_none" in entry
+        assert entry["samples"] + entry["dropped_none"] == 2  # repeats=2
+
 
 # ---------------------------------------------------------------------------
 # test_arms_share_applicable_dimensions  (A1 invariant)
@@ -294,6 +307,92 @@ def test_plan_failure_synthesizes_zero_row(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# test_ok_run_without_eval_raises_integrity_error
+# ---------------------------------------------------------------------------
+
+
+def test_ok_run_without_eval_raises_integrity_error(tmp_path: Path) -> None:
+    """status=='ok' with eval=None is an infrastructure failure — abort-fast.
+
+    The gate threw on a successful (money-spending) run and the engine
+    swallowed+logged it. Booking that as quality-0 would silently bias the
+    verdict toward KILL, so the harness must raise BenchIntegrityError
+    instead of synthesizing a zero row.
+    """
+    from dynamic_subgraphs.engine import RunResult
+    from dynamic_subgraphs.usage import TokenUsage
+
+    lib = RouterLibrary.from_dir(_LIBRARY_DIR, _SINGLE_FIXED)
+    task = BenchTask(
+        task_id="t-gate-broke",
+        task_type="compare",
+        prompt="Compare X and Y.",
+        reference=_ref(),
+    )
+
+    ok_but_unscored = RunResult(
+        run_id="fake-run-ok-no-eval",
+        status="ok",
+        response="a fine answer",
+        plan=None,
+        eval=None,
+        usage=TokenUsage(),
+    )
+
+    with (
+        patch.object(DynamicSubgraphs, "run", return_value=ok_but_unscored),
+        pytest.raises(BenchIntegrityError, match="no EvalResult"),
+    ):
+        run_benchmark(
+            tasks=[task],
+            repeats=1,
+            runs_dir=tmp_path,
+            router_library=lib,
+            bench_id="test-gate-broke",
+            planner="mock",
+        )
+
+
+# ---------------------------------------------------------------------------
+# test_bench_id_reuse_refused
+# ---------------------------------------------------------------------------
+
+
+def test_bench_id_reuse_refused(tmp_path: Path) -> None:
+    """A pre-existing non-empty bench dir must be refused BEFORE any run."""
+    lib = RouterLibrary.from_dir(_LIBRARY_DIR, _SINGLE_FIXED)
+    task = BenchTask(
+        task_id="t-reuse",
+        task_type="summarize",
+        prompt="Summarize the moon.",
+        reference=_ref(),
+    )
+
+    # Pre-create the bench dir with a stale file from a "prior attempt".
+    stale_dir = tmp_path / "bench" / "test-reused-id"
+    stale_dir.mkdir(parents=True)
+    (stale_dir / "bench.jsonl").write_text("{}\n", encoding="utf-8")
+
+    # The guard must fire before any engine.run call — patch run to explode
+    # so the test fails loudly if the ordering ever regresses.
+    def _must_not_run(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("engine.run was called despite the reuse guard")
+
+    with (
+        patch.object(DynamicSubgraphs, "run", side_effect=_must_not_run),
+        pytest.raises(BenchIntegrityError, match="unique per run"),
+    ):
+        run_benchmark(
+            tasks=[task],
+            repeats=1,
+            runs_dir=tmp_path,
+            router_library=lib,
+            bench_id="test-reused-id",
+            planner="mock",
+        )
+
+
+# ---------------------------------------------------------------------------
 # test_prompt_visibility_on_real_runner_path
 # ---------------------------------------------------------------------------
 
@@ -371,11 +470,14 @@ def test_prompt_visibility_on_real_runner_path(tmp_path: Path) -> None:
     # The run must complete (the fake chat returns a valid response).
     assert result.ok, f"Run failed: {result.status} {result.errors}"
 
-    # The task sentence must appear in at least one HumanMessage content.
+    # The task sentence must appear in a HumanMessage specifically — system
+    # prompts don't count; the *user-facing* message must carry the task.
     found = False
     for msg_list in captured_messages:
         for msg in msg_list:
-            content = getattr(msg, "content", None)
+            if not isinstance(msg, HumanMessage):
+                continue
+            content = msg.content
             if isinstance(content, str) and task_sentence in content:
                 found = True
                 break

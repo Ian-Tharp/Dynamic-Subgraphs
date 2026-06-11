@@ -28,6 +28,7 @@ from app.runtime import ModelRef
 from dynamic_subgraphs.bench import (
     ARMS,
     ArmRunRow,
+    BenchIntegrityError,
     BenchReport,
     BenchTask,
     RouterLibrary,
@@ -75,6 +76,7 @@ __all__ = [
     "STRUCTURED_METHODS",
     "ArmRunRow",
     "Artifact",
+    "BenchIntegrityError",
     "BenchReport",
     "BenchTask",
     "DeterministicEvalGate",

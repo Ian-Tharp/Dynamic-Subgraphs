@@ -32,6 +32,18 @@ from dynamic_subgraphs.types import Planner
 ARMS: tuple[str, ...] = ("invented", "routed", "authored")
 
 
+class BenchIntegrityError(RuntimeError):
+    """Raised when a benchmark run would record corrupt evidence.
+
+    Two cases abort-fast rather than pollute the verdict: (1) a run that
+    succeeded (status=="ok") but produced no EvalResult — an infrastructure
+    failure in the gate that would otherwise be silently booked as a
+    quality-0 row, biasing the decision toward KILL; (2) a reused bench_id
+    whose directory already holds rows from a prior attempt, which would
+    mislead corpus readers. Abort-fast beats polluted verdicts.
+    """
+
+
 # ---------------------------------------------------------------------------
 # BenchTask
 # ---------------------------------------------------------------------------
@@ -237,35 +249,42 @@ def _pilot_stats(rows: list[ArmRunRow]) -> dict[str, Any]:
     using the normal approximation (95%, pre-registered 20% relative effect):
         repeats = max(3, ceil((1.96 * cv / 0.20) ** 2) + 1)
 
-    Returns None entries when there are fewer than 2 values or mean <= 0.
+    Every per-task entry carries ``samples`` (usable value_per_ktok count) and
+    ``dropped_none`` (invented-arm rows whose value_per_ktok was None), so a
+    thin CV is visible at a glance. ``cv`` is None when there are fewer than 2
+    usable values or mean <= 0.
     """
-    # Group invented-arm value_per_ktok by task_id.
+    # Group invented-arm value_per_ktok by task_id, tracking dropped Nones.
     by_task: dict[str, list[float]] = {}
+    dropped: dict[str, int] = {}
     for row in rows:
         if row.arm == "invented":
             by_task.setdefault(row.task_id, [])
+            dropped.setdefault(row.task_id, 0)
             if row.value_per_ktok is not None:
                 by_task[row.task_id].append(row.value_per_ktok)
+            else:
+                dropped[row.task_id] += 1
 
     per_task_cv: dict[str, Any] = {}
     for task_id, values in by_task.items():
-        if len(values) < 2:
-            per_task_cv[task_id] = None
-            continue
-        mean = statistics.mean(values)
-        if mean <= 0:
-            per_task_cv[task_id] = None
-            continue
-        stdev = statistics.stdev(values)
-        cv = stdev / mean
-        recommended_repeats = max(3, math.ceil((1.96 * cv / 0.20) ** 2) + 1)
-        per_task_cv[task_id] = {
-            "cv": cv,
-            "mean_value_per_ktok": mean,
-            "stdev_value_per_ktok": stdev,
-            "n": len(values),
-            "recommended_repeats": recommended_repeats,
+        entry: dict[str, Any] = {
+            "cv": None,
+            "samples": len(values),
+            "dropped_none": dropped[task_id],
         }
+        if len(values) >= 2:
+            mean = statistics.mean(values)
+            if mean > 0:
+                stdev = statistics.stdev(values)
+                cv = stdev / mean
+                entry["cv"] = cv
+                entry["mean_value_per_ktok"] = mean
+                entry["stdev_value_per_ktok"] = stdev
+                entry["recommended_repeats"] = max(
+                    3, math.ceil((1.96 * cv / 0.20) ** 2) + 1
+                )
+        per_task_cv[task_id] = entry
 
     return {
         "per_task_cv": per_task_cv,
@@ -319,10 +338,26 @@ def run_benchmark(
 
     Runs are sequential (no threading). Plan/validation failures synthesize
     quality=0.0 / floor=False rows (the plan-failure rule).
+
+    Raises:
+        BenchIntegrityError: if ``bench_id`` reuses a non-empty bench dir, or
+            if a run succeeds (status=="ok") without an EvalResult — an
+            infrastructure failure that must not be booked as quality-0 data.
     """
     from dynamic_subgraphs.eval import DeterministicEvalGate
 
     runs_dir = Path(runs_dir)
+
+    # Refuse a reused bench_id BEFORE spending any tokens: stale rows from a
+    # prior attempt under the same id would mislead corpus readers.
+    bench_dir = runs_dir / "bench" / bench_id
+    if bench_dir.is_dir() and any(bench_dir.iterdir()):
+        raise BenchIntegrityError(
+            f"bench dir {bench_dir} already exists and is non-empty — "
+            "bench_id must be unique per run; stale run dirs from a prior "
+            "attempt would mislead corpus readers."
+        )
+
     gate = DeterministicEvalGate(grounding_applicability="reference_only")
     engine = DynamicSubgraphs(
         EngineConfig(
@@ -361,8 +396,20 @@ def run_benchmark(
                 )
 
                 eval_result = result.eval
+                if eval_result is None and result.status == "ok":
+                    # Disjoint from the legit case below: the run succeeded
+                    # (and spent money) but the gate threw and the engine
+                    # swallowed+logged it. Booking this as quality-0 would
+                    # silently bias the verdict toward KILL.
+                    raise BenchIntegrityError(
+                        f"run {run_id!r} succeeded but produced no EvalResult — "
+                        "the gate failed on a successful run (see engine warning "
+                        "logs). Aborting: a decision-grade benchmark must not "
+                        "book infrastructure failures as quality-0 data."
+                    )
                 if eval_result is None:
-                    # Plan / validation failure: synthesize a zero row.
+                    # Legit failure (plan/validation/compile/execution — any
+                    # non-ok status): synthesize a zero row.
                     quality = 0.0
                     floor_met = False
                     vpktok: float | None = None
