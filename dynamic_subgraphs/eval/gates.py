@@ -34,7 +34,7 @@ from __future__ import annotations
 import hashlib
 import re
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from app.models import GraphSpec, NodeKind
 from app.registry import RegistryValidationError, validate_graph_spec
@@ -168,7 +168,12 @@ def _web_search_nodes(spec: GraphSpec) -> int:
     count = 0
     for node in spec.nodes:
         if node.kind == NodeKind.TOOL_CALL:
-            tool = str(node.params.get("tool") or node.params.get("name") or "")
+            tool = str(
+                node.params.get("tool_name")
+                or node.params.get("tool")
+                or node.params.get("name")
+                or ""
+            )
             if tool == _GROUNDED_TOOL:
                 count += 1
     return count
@@ -428,6 +433,16 @@ class DeterministicEvalGate:
     ``EngineConfig(eval_gate=DeterministicEvalGate())``. Scoring is a pure
     function of the completed run, so re-scoring the same run is byte-stable
     (only ``scored_at`` differs).
+
+    Args:
+        grounding_applicability: Controls how grounding dimension applicability
+            is determined. Options are:
+            - "auto" (default): grounding is applicable if the reference requires
+              it OR if the plan voluntarily uses a web_search node.
+            - "reference_only": grounding is applicable only if the reference
+              requires it (benchmark/paired-mode). This ensures both arms of a
+              paired task have identical applicable_dimensions regardless of
+              voluntary plan choices, preventing corpus mismatches.
     """
 
     name = "deterministic@v1"
@@ -438,10 +453,12 @@ class DeterministicEvalGate:
         weights: dict[str, float] | None = None,
         quality_floor: float = QUALITY_FLOOR_DEFAULT,
         rubric_id: str = _RUBRIC_ID,
+        grounding_applicability: Literal["auto", "reference_only"] = "auto",
     ) -> None:
         self._weights = dict(weights or _DEFAULT_WEIGHTS)
         self._quality_floor = quality_floor
         self._rubric_id = rubric_id
+        self._grounding_applicability = grounding_applicability
 
     def _blend(self, components: list[ScoreComponent]) -> float:
         numerator = 0.0
@@ -493,10 +510,15 @@ class DeterministicEvalGate:
 
         output_text = "\n".join(_collect_text(values))
         web_search_nodes = _web_search_nodes(spec)
-        grounding_applicable = (
-            bool(context.reference and context.reference.grounding_required)
-            or web_search_nodes > 0
-        )
+        if self._grounding_applicability == "reference_only":
+            grounding_applicable = bool(
+                context.reference and context.reference.grounding_required
+            )
+        else:
+            grounding_applicable = (
+                bool(context.reference and context.reference.grounding_required)
+                or web_search_nodes > 0
+            )
         components = [
             _score_plan_validity(spec),
             _score_grounding(grounding_applicable, grounded_outputs, web_search_nodes),
@@ -530,6 +552,11 @@ def build_deterministic_eval_gate(
     *,
     weights: dict[str, float] | None = None,
     quality_floor: float = QUALITY_FLOOR_DEFAULT,
+    grounding_applicability: Literal["auto", "reference_only"] = "auto",
 ) -> DeterministicEvalGate:
     """Factory mirroring the runtime's other builders."""
-    return DeterministicEvalGate(weights=weights, quality_floor=quality_floor)
+    return DeterministicEvalGate(
+        weights=weights,
+        quality_floor=quality_floor,
+        grounding_applicability=grounding_applicability,
+    )

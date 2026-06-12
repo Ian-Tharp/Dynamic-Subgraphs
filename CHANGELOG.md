@@ -7,6 +7,60 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-06-11
+
+This release completes the **eval/value layer** (Slice 7) and ships the **3-arm
+benchmark harness** that measures the dynamic-topology thesis: scored, persisted,
+comparable runs — and the machinery to test LLM-invented topologies against
+hand-authored baselines under a pre-registered decision rule. Everything is
+**off by default**: nothing scores a run until an `EvalGate` is configured.
+
+### Upgrade notes (behavior changes since 0.4.0)
+- **`Recording.all()` (and `record=True`) now selects the new `eval.json`
+  artifact.** Harmless without a gate (nothing is written); with
+  `EngineConfig(eval_gate=...)` set, scored runs persist `runs/<id>/eval.json`.
+- **`capabilities()`** now reports `eval_gates` and the new `"evaluated"`
+  recording preset.
+
+### Added
+- **Eval persistence:** `Artifact.EVAL` + `Recording.evaluated()` preset;
+  `FileRecorder.record_eval()` / `load_eval()`; `list_runs()` summaries carry
+  `quality` / `value_per_ktok` / `origin` / `deterministic` /
+  `quality_floor_met` when a run was scored.
+- **Engine wiring:** `EngineConfig(eval_gate=..., eval_tags=...)`;
+  `run(..., task_id=, origin=, reference=)` benchmark tags;
+  `RunResult.eval` (and in `to_dict()`). A failing gate never fails the run
+  (breadcrumb-logged, mirrors best-effort recording).
+- **Corpus reader:** `EvalCorpus` (load / group by task / group by topology)
+  and `OriginComparison` — per-run paired Pareto comparison with quality-floor
+  gating; refuses mismatched `rubric_id` / `applicable_dimensions` pairs.
+- **Benchmark fixed-arm seam:** `RunConfig.fixed_spec` and
+  `run(..., fixed_spec=...)` — run a hand-authored, registry-validated
+  `GraphSpec` on the real LLM-worker path (validation/governance still
+  enforced; an invalid fixed spec is rejected).
+- **Benchmark harness:** `dynamic_subgraphs.bench` — `BenchTask`,
+  `RouterLibrary`, `fill_spec` (literal `{prompt}` substitution into authored
+  specs' instructions and tool args), `run_benchmark` (task × arm × repeat,
+  one pinned worker model), `ArmRunRow` / `BenchReport`, pilot CV statistics,
+  and `BenchIntegrityError` — a successful run that yields no `EvalResult`
+  aborts the benchmark rather than booking corrupt quality-0 evidence;
+  bench ids are single-use.
+- **Paired-mode scoring:** `DeterministicEvalGate(grounding_applicability=
+  "reference_only")` — grounding applicability becomes a task property so
+  `applicable_dimensions` are identical across benchmark arms.
+- **Plans-as-data baselines:** reviewed router library
+  (`docs/evals/router-library-v1/`) + single-fixed sanity graph, all
+  registry-validated and offline-executable; pilot task pack
+  (`docs/evals/bench-tasks-pilot-v1.jsonl`) with de-echoed, reference-anchored
+  checklists.
+- **Pilot results + pre-registered rule:**
+  `docs/evals/bench-dynamic-vs-fixed-2026-06.md` — completed 90-run pilot and
+  the frozen main-run decision rule (registered before main-run spend).
+
+### Fixed
+- `DeterministicEvalGate` web-search detection now recognizes the contract
+  `tool_name` param key (legacy `tool` / `name` keys remain as fallbacks).
+
 ## [0.4.0] — 2026-06-05
 
 This release closes the concurrent-sibling `spawn_subgraph` budget TOCTOU and lands a

@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "graph_id": "router-compare-v1",
+  "goal": "Gather separate analyses of two subjects in parallel, concatenate them, then synthesize a direct comparison and recommendation.",
+  "rationale": "Parallel fan-out captures each subject independently so neither analysis contaminates the other. A concat reduce assembles the evidence in a consistent order before the final llm_call synthesizes a crisp comparison and recommendation — demonstrating that authored parallel shapes reliably outperform single-shot compare prompts.",
+  "budget": {
+    "max_nodes": 12,
+    "max_llm_calls": 8,
+    "max_depth": 2,
+    "max_wall_seconds": 90,
+    "max_fanout": 64
+  },
+  "nodes": [
+    {
+      "id": "analyze_subject_a",
+      "kind": "llm_call",
+      "inputs": [],
+      "outputs": ["analysis_a"],
+      "params": {
+        "instruction": "Identify and summarize the strengths and weaknesses of the FIRST subject in this comparison request: {prompt} Focus only on the first subject; do not mention the second. Cover at least: core capabilities or advantages, notable limitations or risks, and any evidence or examples that support your assessment. Write in plain prose, 150-250 words.",
+        "model": null
+      }
+    },
+    {
+      "id": "analyze_subject_b",
+      "kind": "llm_call",
+      "inputs": [],
+      "outputs": ["analysis_b"],
+      "params": {
+        "instruction": "Identify and summarize the strengths and weaknesses of the SECOND subject in this comparison request: {prompt} Focus only on the second subject; do not mention the first. Cover at least: core capabilities or advantages, notable limitations or risks, and any evidence or examples that support your assessment. Write in plain prose, 150-250 words.",
+        "model": null
+      }
+    },
+    {
+      "id": "combine_analyses",
+      "kind": "reduce",
+      "inputs": ["analysis_a", "analysis_b"],
+      "outputs": ["combined_evidence"],
+      "params": {
+        "strategy": "concat",
+        "input_keys": ["analysis_a", "analysis_b"],
+        "output_key": "combined_evidence"
+      }
+    },
+    {
+      "id": "synthesize_comparison",
+      "kind": "llm_call",
+      "inputs": ["combined_evidence"],
+      "outputs": ["comparison_result"],
+      "params": {
+        "instruction": "Using the combined evidence in upstream state (combined_evidence), produce a direct head-to-head comparison of the two subjects from the user's request. Structure your response as: (1) a comparison table or bullet list of key differences, (2) a clear recommendation identifying which option is preferable and under what conditions, and (3) a one-sentence justification grounded in the evidence. Be decisive — hedge only where the evidence genuinely requires it. The original request was: {prompt}",
+        "model": null
+      }
+    }
+  ],
+  "edges": [
+    {"from": "START", "to": "analyze_subject_a"},
+    {"from": "START", "to": "analyze_subject_b"},
+    {"from": "analyze_subject_a", "to": "combine_analyses"},
+    {"from": "analyze_subject_b", "to": "combine_analyses"},
+    {"from": "combine_analyses", "to": "synthesize_comparison"},
+    {"from": "synthesize_comparison", "to": "END"}
+  ],
+  "metadata": {
+    "planner_model": null,
+    "purpose": "Arm B router library — compare task type",
+    "created_at": null
+  }
+}
