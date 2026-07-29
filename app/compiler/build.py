@@ -22,6 +22,7 @@ from app.models import DynamicRunState, GraphSpec, NodeKind, NodeSpec
 from app.models.graph_spec import SPECIAL_NODE_END, SPECIAL_NODE_START
 from app.registry import Registry
 from app.runtime.branch import make_branch_node, make_branch_router
+from app.runtime.budget_ledger import BudgetLedger
 from app.runtime.parallel_map import (
     make_parallel_map_dispatcher,
     make_parallel_map_joiner,
@@ -46,6 +47,7 @@ def build_graph(
     registry: Registry | None = None,
     runners: Mapping[NodeKind, NodeRunner] | None = None,
     use_default_runners: bool = True,
+    ledger_registry: Mapping[str, BudgetLedger] | None = None,
 ) -> StateGraph:
     """Build a transient LangGraph StateGraph from an already-validated GraphSpec.
 
@@ -82,7 +84,7 @@ def build_graph(
 
     for node in spec.nodes:
         if node.kind == NodeKind.PARALLEL_MAP:
-            _add_parallel_map(graph, node, available_runners, reg)
+            _add_parallel_map(graph, node, available_runners, reg, ledger_registry)
         elif node.kind == NodeKind.BRANCH:
             graph.add_node(node.id, make_branch_node(node))
         elif node.kind == NodeKind.WAIT_FOR_EVENT:
@@ -124,6 +126,7 @@ def _add_parallel_map(
     node: NodeSpec,
     available_runners: Mapping[NodeKind, NodeRunner],
     registry: Registry,
+    ledger_registry: Mapping[str, BudgetLedger] | None = None,
 ) -> None:
     child_kind_str = node.params.get("child_kind")
     if not isinstance(child_kind_str, str):
@@ -158,6 +161,7 @@ def _add_parallel_map(
             worker_id=worker_id,
             join_id=join_id,
             child_counts_as_llm_call=child_counts_as_llm_call,
+            ledger_registry=ledger_registry,
         ),
     )
     graph.add_node(

@@ -274,6 +274,12 @@ def build_supervisor(
             executor=executor,
             recorder=recorder,
             policy=effective_policy,
+            # An LLM planner's runtime planning call is a real model call and
+            # must be charged against the parent's LLM budget; mock/static
+            # planners (and fixed_spec runs) are token-free.
+            planner_counts_as_llm_call=(
+                config.planner == "llm" and config.fixed_spec is None
+            ),
         ),
         ledger_registry=executor.ledgers,
     )

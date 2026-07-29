@@ -56,6 +56,49 @@ def make_node_wrapper(
             node_id=node.id,
         )
 
+        # Runtime spend gate: the static validator caps the *plan*, but child
+        # roll-ups and fan-outs land in `counters` mid-run, so the cumulative
+        # spend can reach the granted ceiling with plan nodes still pending.
+        # Refuse to start an LLM-consuming node once the budget is exhausted —
+        # fail-closed, before the call fires — so `max_llm_calls` bounds actual
+        # spend, not just plan shape. The budget rides in metadata (seeded by
+        # the executor); absent it (a bare-runner unit test) the gate is
+        # skipped, mirroring the parallel_map dispatcher's fallback.
+        if counts_as_llm_call:
+            budget_raw = (state.get("metadata", {}) or {}).get("budget_max_llm_calls")
+            if budget_raw is not None:
+                consumed = int(
+                    (state.get("counters", {}) or {}).get("llm_calls_consumed", 0)
+                )
+                if consumed + 1 > int(budget_raw):
+                    message = (
+                        f"node '{node.id}' would spend LLM call "
+                        f"{consumed + 1}, exceeding the host max_llm_calls "
+                        f"{int(budget_raw)}"
+                    )
+                    halted = TraceEvent(
+                        kind=TraceEventKind.NODE_ERROR,
+                        node_id=node.id,
+                        message=message,
+                        data={"duration_ms": 0.0},
+                    )
+                    return Command(
+                        update={
+                            "errors": [
+                                {
+                                    "node_id": node.id,
+                                    "message": message,
+                                    "type": "LlmCallBudgetExceeded",
+                                }
+                            ],
+                            "events": [
+                                started.model_dump(mode="json"),
+                                halted.model_dump(mode="json"),
+                            ],
+                        },
+                        goto=END,
+                    )
+
         try:
             raw_outputs = runner(state, node.params)
             value_updates = map_outputs(node, raw_outputs)

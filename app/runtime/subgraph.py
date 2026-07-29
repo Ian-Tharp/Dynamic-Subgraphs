@@ -205,6 +205,7 @@ def make_child_launcher(
     registry: Registry | None = None,
     recorder: Recorder | None = None,
     policy: ExecutionPolicy | None = None,
+    planner_counts_as_llm_call: bool = False,
 ) -> ChildLauncher:
     """Build a `ChildLauncher` from a planner + executor.
 
@@ -219,6 +220,12 @@ def make_child_launcher(
     and graph_depth in its metadata — so a nested run is fully inspectable and
     its synthesized spec is durable. Recording failures never break the child
     run (they're swallowed), matching the supervisor's chain-record behavior.
+
+    `planner_counts_as_llm_call` marks the runtime planning call a spawn makes
+    (`planner(sub_goal)`) as a real model call: it is charged against the
+    parent's remaining LLM allowance (one call reserved before the child plans,
+    reported back in the child's counters) so nested planning can't spend
+    outside the budget. Leave False for token-free planners (mock/static).
     """
 
     def launch(
@@ -252,6 +259,20 @@ def make_child_launcher(
                 spec = recorder.load_validated_spec(replay_of)
             except Exception:
                 spec = None
+        # The runtime planning call is itself a model call when the planner is
+        # LLM-backed. Charge it against the parent's remaining allowance:
+        # refuse to plan on an empty budget, and carve the call out of the
+        # child's grant so plan + child together stay within `max_llm_calls`.
+        planner_call_charged = False
+        if spec is None and planner_counts_as_llm_call:
+            if max_llm_calls is not None and max_llm_calls < 1:
+                raise SubgraphChildFailed(
+                    f"child subgraph {run_id!r} has no remaining LLM-call "
+                    f"budget for its planner call (the nest is out of budget)"
+                )
+            planner_call_charged = True
+            if max_llm_calls is not None:
+                max_llm_calls = max_llm_calls - 1
         if spec is None:
             spec = planner(sub_goal)
         # Cap the child's budget to the parent's REMAINING allowance (nodes, LLM
@@ -311,9 +332,14 @@ def make_child_launcher(
                     "failed to record child subgraph run %r", run_id, exc_info=True
                 )
         state = result.state or {}
+        counters = dict(state.get("counters", {}) or {})
+        if planner_call_charged:
+            # Report the planning call as part of this nest's spend so it rolls
+            # up to the parent ledger like any other child LLM call.
+            counters["llm_calls_consumed"] = counters.get("llm_calls_consumed", 0) + 1
         return ChildResult(
             values=dict(state.get("values", {}) or {}),
-            counters=dict(state.get("counters", {}) or {}),
+            counters=counters,
             status="ok" if result.ok else "failed",
             response=result.error or "",
         )

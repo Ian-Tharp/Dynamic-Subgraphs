@@ -147,6 +147,18 @@ def create_chain(
     finished = job.wait(timeout=timeout)
     if finished and job.result is not None:
         return JSONResponse(status_code=200, content=_chain_payload(job.result))
+    if finished:
+        # The worker crashed before producing a result — surface the failure
+        # and its message instead of a 202 pointing at nothing.
+        return JSONResponse(
+            status_code=200,
+            content={
+                "chain_id": run_id,
+                "status": "failed",
+                "error": job.error,
+                "links": {"self": f"/chains/{run_id}"},
+            },
+        )
     return JSONResponse(
         status_code=202,
         content={
@@ -164,6 +176,14 @@ def get_chain(request: Request, chain_id: str) -> dict[str, Any]:
     job = ctx.jobs.get(chain_id)
     if job is not None and job.result is not None:
         return _chain_payload(job.result)
+    if job is not None and job.is_terminal():
+        # Terminal without a result: the chain worker crashed.
+        return {
+            "chain_id": chain_id,
+            "status": "failed",
+            "error": job.error,
+            "links": {"self": f"/chains/{chain_id}"},
+        }
     try:
         return ctx.recorder.load_chain(chain_id)
     except FileNotFoundError as exc:

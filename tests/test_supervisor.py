@@ -11,6 +11,7 @@ The supervisor must:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -103,10 +104,17 @@ def test_supervisor_handles_plan_failure(
     assert result.status == "plan_failed"
     assert result.validated_spec is None
     assert result.result is None
-    assert result.record is None
     assert result.errors[-1]["stage"] == "plan"
     assert "planner exploded" in result.errors[-1]["message"]
-    assert not (tmp_path / "sup-plan-fail").exists()
+    # Failed attempts are recorded too — every attempt produces a directory.
+    assert result.record is not None
+    failure_dir = tmp_path / "sup-plan-fail"
+    assert failure_dir.is_dir()
+    output = json.loads((failure_dir / "output.json").read_text(encoding="utf-8"))
+    assert output["ok"] is False
+    assert output["status"] == "plan_failed"
+    assert "planner exploded" in output["error"]
+    assert not (failure_dir / "spec.json").exists()  # no validated spec to persist
 
 
 # ---------- validation failure ----------
@@ -133,12 +141,20 @@ def test_supervisor_handles_validation_failure(
     assert result.status == "validation_failed"
     assert result.validated_spec is None
     assert result.result is None
-    assert result.record is None
     assert result.errors[-1]["stage"] == "validate"
     assert any(
         issue["code"] == "dangling_edge" for issue in result.errors[-1]["issues"]
     )
-    assert not (tmp_path / "sup-validate-fail").exists()
+    # Failed attempts are recorded too, including the rejected plan — but never
+    # under spec.json, which only a *validated* spec may occupy.
+    assert result.record is not None
+    failure_dir = tmp_path / "sup-validate-fail"
+    assert failure_dir.is_dir()
+    output = json.loads((failure_dir / "output.json").read_text(encoding="utf-8"))
+    assert output["ok"] is False
+    assert output["status"] == "validation_failed"
+    assert (failure_dir / "rejected_spec.json").exists()
+    assert not (failure_dir / "spec.json").exists()
 
 
 # ---------- compile failure ----------
@@ -178,10 +194,15 @@ def test_supervisor_handles_compile_failure(
     assert result.status == "compile_failed"
     assert result.validated_spec is not None
     assert result.result is None
-    assert result.record is None
     assert result.errors[-1]["stage"] == "compile"
     assert "simulated compile failure" in result.errors[-1]["message"]
-    assert not (tmp_path / "sup-compile-fail").exists()
+    # Failed attempts are recorded too — the compile failure leaves a record.
+    assert result.record is not None
+    failure_dir = tmp_path / "sup-compile-fail"
+    assert failure_dir.is_dir()
+    output = json.loads((failure_dir / "output.json").read_text(encoding="utf-8"))
+    assert output["ok"] is False
+    assert output["status"] == "compile_failed"
 
 
 def minimal_spec_for_supervisor(make_node, make_edge) -> GraphSpec:

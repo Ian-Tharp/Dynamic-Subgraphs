@@ -185,6 +185,7 @@ class LangGraphExecutor:
             registry=self._registry,
             runners=self._runners,
             use_default_runners=not self._strict_runners,
+            ledger_registry=self._ledgers,
         )
         compile_kwargs: dict[str, Any] = {}
         if self._checkpointer is not None:
@@ -252,6 +253,22 @@ class LangGraphExecutor:
             with self._ledgers_lock:
                 self._ledgers.pop(run_id, None)
 
+    def has_pending_interrupt(self, compiled: CompiledGraph, *, run_id: str) -> bool:
+        """Whether `run_id` has checkpointed state paused on an interrupt.
+
+        The resumability probe: True only when the checkpointer holds a pending
+        `interrupt()` for this run's thread — i.e. the run actually paused and
+        has not yet been resumed to completion. False with no checkpointer, no
+        persisted state for the run, or a run that already finished; resuming
+        such a run would re-execute it rather than continue it.
+        """
+        if self._checkpointer is None:
+            return False
+        concrete = _coerce_compiled_graph(compiled)
+        config = self._invoke_config(concrete.spec, run_id)
+        paused, _ = _inspect_pending_interrupts(concrete.graph, config)
+        return paused
+
     def _timeout_result(
         self, concrete: _LangGraphCompiledGraph, run_id: str
     ) -> ExecutionResult:
@@ -286,15 +303,39 @@ class LangGraphExecutor:
 
         concrete = _coerce_compiled_graph(compiled)
         config = self._invoke_config(concrete.spec, run_id)
-        state, paused, payloads = _run_graph_isolated(
-            concrete.graph,
-            Command(resume=event),
-            config=config,
-            inspect_config=config,
-        )
-        return self._build_result(
-            concrete, state, run_id, paused=paused, interrupt_payloads=payloads
-        )
+        # A resumed run gets a FRESH wall-clock deadline minted from the spec's
+        # granted max_wall_seconds. The original deadline in the checkpointed
+        # metadata is a `time.monotonic()` value — expired after any real
+        # human-approval delay and meaningless across processes — so it is
+        # overwritten via the resume Command's state update. Without a deadline
+        # here, a post-resume runner that hangs would block the caller forever,
+        # which the wall-clock budget exists to prevent.
+        deadline = time.monotonic() + concrete.spec.budget.max_wall_seconds
+        # Re-register a budget ledger for the resumed run so post-resume
+        # spawn_subgraph siblings keep the concurrent-reservation protection
+        # (execute() seeds one, but its entry was popped when the run paused).
+        with self._ledgers_lock:
+            self._ledgers[run_id] = BudgetLedger()
+        try:
+            try:
+                state, paused, payloads = _run_graph_isolated(
+                    concrete.graph,
+                    Command(
+                        resume=event,
+                        update={"metadata": {"wall_deadline_monotonic": deadline}},
+                    ),
+                    config=config,
+                    inspect_config=config,
+                    hard_timeout_s=max(0.0, deadline - time.monotonic()),
+                )
+            except _DeadlineExceeded:
+                return self._timeout_result(concrete, run_id)
+            return self._build_result(
+                concrete, state, run_id, paused=paused, interrupt_payloads=payloads
+            )
+        finally:
+            with self._ledgers_lock:
+                self._ledgers.pop(run_id, None)
 
     def _invoke_config(self, spec: GraphSpec, run_id: str) -> dict[str, Any]:
         """Build the LangGraph invoke config: an explicit recursion_limit plus,

@@ -26,7 +26,7 @@ node in the trace, with duration spanning the whole fan-out.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any
@@ -35,6 +35,7 @@ from langgraph.graph import END
 from langgraph.types import Command, Send
 
 from app.models import DynamicRunState, NodeKind, NodeSpec, TraceEvent, TraceEventKind
+from app.runtime.budget_ledger import BudgetLedger
 from app.runtime.runners import NodeRunner
 from app.runtime.wrappers import node_counter_delta
 
@@ -78,12 +79,20 @@ def make_parallel_map_dispatcher(
     worker_id: str,
     join_id: str,
     child_counts_as_llm_call: bool = False,
+    ledger_registry: Mapping[str, BudgetLedger] | None = None,
 ) -> Callable[[DynamicRunState], Command]:
     """Build the LangGraph node function for the parallel_map dispatcher.
 
     `child_counts_as_llm_call` lets the dispatcher debit the fan-out against the
     host `max_llm_calls` budget at dispatch (fail-closed) when each worker spends
     an LLM call — the width cap alone (`max_fanout`) does not bound LLM spend.
+
+    `ledger_registry` (run_id -> BudgetLedger, the executor's live map) makes
+    that debit atomic across a superstep: two dispatchers scheduled concurrently
+    read the same pre-merge `counters` snapshot, so a plain snapshot check lets
+    them jointly overrun the budget. Charging the shared per-run ledger closes
+    that TOCTOU — the same mechanism `spawn_subgraph` reservations use. Absent
+    a ledger (a bare-executor unit test) the snapshot check still applies.
     """
 
     over_key = node.params["over"]
@@ -171,7 +180,20 @@ def make_parallel_map_dispatcher(
                 consumed = int(
                     (state.get("counters", {}) or {}).get("llm_calls_consumed", 0)
                 )
-                if consumed + len(items) > max_llm_calls:
+                run_id = str((state.get("metadata", {}) or {}).get("run_id", ""))
+                ledger = (
+                    ledger_registry.get(run_id) if ledger_registry is not None else None
+                )
+                if ledger is not None:
+                    granted = ledger.try_charge(
+                        key="llm_calls",
+                        amount=len(items),
+                        budget=max_llm_calls,
+                        consumed=consumed,
+                    )
+                else:
+                    granted = consumed + len(items) <= max_llm_calls
+                if not granted:
                     return _halt_with_error(
                         node=node,
                         start_event=start_event,

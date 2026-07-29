@@ -471,6 +471,38 @@ class Supervisor:
                 errors=errors,
             )
 
+        # Refuse to resume a run that is not actually paused. Without this
+        # check, "resuming" a completed run re-applies the event and re-executes
+        # the post-wait portion of the graph — re-spending LLM calls, re-firing
+        # side effects, and overwriting the recorded trace. Feature-detected so
+        # custom executors without the probe keep the old (permissive) behavior.
+        pending_probe = getattr(self._executor, "has_pending_interrupt", None)
+        if pending_probe is not None and not pending_probe(compiled, run_id=run_id):
+            errors.append(
+                {
+                    "stage": "resume_check",
+                    "type": "NotResumable",
+                    "message": (
+                        f"run {run_id!r} has no pending pause — it either "
+                        "completed, was already resumed, or its checkpointed "
+                        "state is gone"
+                    ),
+                }
+            )
+            return SupervisorResult(
+                run_id=run_id,
+                status=RunStatus.RESUME_FAILED,
+                response=(
+                    f"Resume refused: run {run_id!r} is not paused (it either "
+                    "completed, was already resumed, or its checkpointed state "
+                    "is no longer available)."
+                ),
+                validated_spec=spec,
+                result=None,
+                record=None,
+                errors=errors,
+            )
+
         try:
             result = self._executor.resume(compiled, run_id=run_id, event=event)
         except Exception as exc:

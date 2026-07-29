@@ -76,6 +76,35 @@ class BudgetLedger:
                 self._pending[key] = self._pending.get(key, 0) + available
             return grants
 
+    def try_charge(
+        self,
+        *,
+        key: str,
+        amount: int,
+        budget: int | None,
+        consumed: int,
+    ) -> bool:
+        """Atomically reserve an exact `amount` of one resource; False = refused.
+
+        The fixed-amount sibling of `reserve()`: a `parallel_map` dispatcher
+        knows exactly how many calls its fan-out will spend, so instead of
+        claiming the whole remaining budget it charges `amount` against
+        ``budget - consumed - pending``. Refusal is fail-closed — nothing is
+        reserved and the caller must not dispatch. The charged amount is
+        absorbed by the same counters-baseline reconciliation as `reserve()`
+        once the workers' spend lands in `counters`.
+        """
+        with self._lock:
+            if consumed > self._baseline.get(key, 0):
+                self._pending[key] = 0
+                self._baseline[key] = consumed
+            if budget is None:
+                return True
+            if consumed + self._pending.get(key, 0) + amount > budget:
+                return False
+            self._pending[key] = self._pending.get(key, 0) + amount
+            return True
+
     def refund(
         self,
         *,

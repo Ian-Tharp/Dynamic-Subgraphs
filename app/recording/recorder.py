@@ -321,6 +321,106 @@ class FileRecorder:
 
         return RunRecord(run_id=run_id, directory=directory, artifacts=artifacts)
 
+    def record_failure(
+        self,
+        *,
+        run_id: str,
+        status: str,
+        prompt: str | None = None,
+        errors: list[dict[str, Any]] | None = None,
+        rejected_spec: GraphSpec | None = None,
+        overwrite: bool | None = None,
+    ) -> RunRecord | None:
+        """Persist a run that failed *before* execution produced a result.
+
+        `record()` needs a validated spec and an ExecutionResult; a run that
+        died at plan/validate/compile has neither — yet those are exactly the
+        attempts the "every attempt produces a directory" contract is for.
+        Writes (respecting the artifact selection):
+
+        - ``output.json`` — ``ok: false`` + the failure status and errors
+        - ``prompt.md`` — the prompt, when one was given
+        - ``summary.md`` — a short human-readable failure summary
+        - ``rejected_spec.json`` — the planner's rejected spec, when validation
+          failed (deliberately NOT ``spec.json``: only a *validated* spec may
+          occupy the name resume/replay load)
+
+        Returns None (writing nothing) when the selection excludes every
+        artifact this method can produce.
+        """
+        validate_run_id(run_id)
+        effective_overwrite = self._overwrite if overwrite is None else overwrite
+        failure_errors = list(errors or [])
+
+        planned: list[tuple[str, str]] = []  # (key, filename) to write
+        if self._selection is None or _OutputProducer.filename in self._selection:
+            planned.append(("output", _OutputProducer.filename))
+        if prompt is not None and (
+            self._selection is None or _PromptProducer.filename in self._selection
+        ):
+            planned.append(("prompt", _PromptProducer.filename))
+        if self._selection is None or _SummaryProducer.filename in self._selection:
+            planned.append(("summary", _SummaryProducer.filename))
+        if rejected_spec is not None and (
+            self._selection is None or _SpecProducer.filename in self._selection
+        ):
+            planned.append(("rejected_spec", "rejected_spec.json"))
+        if not planned:
+            return None
+
+        directory = self._root / run_id
+        if directory.exists() and not effective_overwrite:
+            raise FileExistsError(
+                f"Run directory already exists (set overwrite=True to replace): {directory}"
+            )
+        directory.mkdir(parents=True, exist_ok=True)
+
+        artifacts: dict[str, Path] = {}
+        for key, filename in planned:
+            path = directory / filename
+            if key == "output":
+                path.write_text(
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "status": status,
+                            "error": (
+                                failure_errors[-1].get("message")
+                                if failure_errors
+                                else None
+                            ),
+                            "errors": failure_errors,
+                            "values": {},
+                            "artifacts": {},
+                            "metadata": {},
+                        },
+                        indent=2,
+                        default=str,
+                    ),
+                    encoding="utf-8",
+                )
+            elif key == "prompt":
+                path.write_text(prompt or "", encoding="utf-8")
+            elif key == "summary":
+                path.write_text(
+                    _render_failure_summary(
+                        run_id, status=status, prompt=prompt, errors=failure_errors
+                    ),
+                    encoding="utf-8",
+                )
+            elif key == "rejected_spec":
+                assert rejected_spec is not None
+                path.write_text(
+                    json.dumps(
+                        rejected_spec.model_dump(mode="json", by_alias=True),
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+            artifacts[key] = path
+
+        return RunRecord(run_id=run_id, directory=directory, artifacts=artifacts)
+
     def load_validated_spec(self, run_id: str) -> GraphSpec:
         """Read a previously-persisted `spec.json` for `run_id` and parse it."""
         validate_run_id(run_id)
@@ -540,6 +640,23 @@ class NullRecorder:
             artifacts={},
         )
 
+    def record_failure(
+        self,
+        *,
+        run_id: str,
+        status: str,
+        prompt: str | None = None,
+        errors: list[dict[str, Any]] | None = None,
+        rejected_spec: GraphSpec | None = None,
+        overwrite: bool | None = None,
+    ) -> RunRecord | None:
+        del status, prompt, errors, rejected_spec, overwrite
+        return RunRecord(
+            run_id=run_id,
+            directory=self._root / run_id,
+            artifacts={},
+        )
+
     def load_validated_spec(self, run_id: str) -> GraphSpec:
         raise FileNotFoundError(
             f"NullRecorder persists nothing, so spec for {run_id!r} is "
@@ -635,6 +752,32 @@ def _render_summary(
             msg = entry.get("message", "")
             lines.append(f"- `{node}` ({etype}): {msg}")
 
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _render_failure_summary(
+    run_id: str,
+    *,
+    status: str,
+    prompt: str | None,
+    errors: list[dict[str, Any]],
+) -> str:
+    lines: list[str] = [
+        f"# Run `{run_id}`",
+        "",
+        f"- **Status:** {status}",
+        "- **Result:** the run failed before execution produced a result",
+    ]
+    if errors:
+        lines.extend(["", "## Errors", ""])
+        for entry in errors:
+            stage = entry.get("stage", "?")
+            etype = entry.get("type", "Error")
+            msg = entry.get("message", "")
+            lines.append(f"- `{stage}` ({etype}): {msg}")
+    if prompt is not None:
+        lines.extend(["", "## Prompt", "", prompt])
     lines.append("")
     return "\n".join(lines)
 

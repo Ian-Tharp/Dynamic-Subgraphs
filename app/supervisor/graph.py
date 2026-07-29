@@ -4,14 +4,17 @@ Topology:
 
     START -> receive -> plan -> validate -> execute -> record -> respond -> END
 
-Plan/validate/execute each catch their *known* failure exceptions (planner
-errors, RegistryValidationError, GraphCompilationError) and set `status` to
-the matching failure code. A conditional edge after each of those stages
-routes to `respond` on failure, skipping the rest of the pipeline. Recording
-failures don't short-circuit — `respond` runs either way, so the user always
-gets a response. Inner-graph execution failures (`ok=False`) are *not*
-treated as supervisor failures: the inner result is recorded normally and
-the supervisor reports `execution_failed`.
+Plan/validate/execute each catch their failure exceptions (planner errors,
+RegistryValidationError, GraphCompilationError, unexpected executor errors)
+and set `status` to the matching failure code. A conditional edge after plan
+and validate routes failures straight to `record` — every attempt, success or
+failure, leaves a record (pre-execution failures via the recorder's
+`record_failure` path). Recording failures don't short-circuit — `respond`
+runs either way, so the user always gets a response — and never mask the
+run's own outcome (only an OK run downgrades to `record_failed`).
+Inner-graph execution failures (`ok=False`) are *not* treated as supervisor
+failures: the inner result is recorded normally and the supervisor reports
+`execution_failed`, with the node-level errors surfaced on `errors`.
 """
 
 from __future__ import annotations
@@ -111,11 +114,14 @@ def build_supervisor_graph(
 
     graph.add_edge(START, "receive")
     graph.add_edge("receive", "plan")
-    graph.add_conditional_edges("plan", _route_after_plan, ["validate", "respond"])
+    # EVERY terminal outcome routes through `record` — success or failure —
+    # so failed attempts (plan/validate/compile) leave a record too, per the
+    # recorder's "every attempt produces a directory" contract.
+    graph.add_conditional_edges("plan", _route_after_plan, ["validate", "record"])
     graph.add_conditional_edges(
-        "validate", _route_after_validate, ["execute", "plan", "respond"]
+        "validate", _route_after_validate, ["execute", "plan", "record"]
     )
-    graph.add_conditional_edges("execute", _route_after_execute, ["record", "respond"])
+    graph.add_edge("execute", "record")
     graph.add_edge("record", "respond")
     graph.add_edge("respond", END)
 
@@ -126,7 +132,7 @@ def build_supervisor_graph(
 
 
 def _route_after_plan(state: SupervisorState) -> str:
-    return "respond" if state.get("status") == _PLAN_FAILED else "validate"
+    return "record" if state.get("status") == _PLAN_FAILED else "validate"
 
 
 def _route_after_validate(state: SupervisorState) -> str:
@@ -134,13 +140,8 @@ def _route_after_validate(state: SupervisorState) -> str:
     if status == _PLAN_REPAIR_NEEDED:
         return "plan"  # the validator decided a repair attempt remains
     if status == _VALIDATION_FAILED:
-        return "respond"
+        return "record"
     return "execute"
-
-
-def _route_after_execute(state: SupervisorState) -> str:
-    # Inner execution failures (ok=False) still need recording.
-    return "respond" if state.get("status") == _COMPILE_FAILED else "record"
 
 
 # ---------- nodes ----------
@@ -252,32 +253,100 @@ def _make_execute_node(executor: GraphExecutor):
                 ],
             }
 
-        result = executor.execute(compiled, run_id=state["run_id"])
+        try:
+            result = executor.execute(compiled, run_id=state["run_id"])
+        except Exception as exc:
+            # Executor infrastructure can raise outside a node runner (e.g. a
+            # checkpointer serialization failure, LangGraph's recursion rail).
+            # Contain it here — the supervisor's contract is "failures don't
+            # raise" — and surface it through the errors channel.
+            return {
+                "status": RunStatus.EXECUTION_FAILED,
+                "errors": [
+                    {
+                        "stage": "execute",
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                    }
+                ],
+            }
         if result.paused:
             status: str = RunStatus.PAUSED
         elif result.ok:
             status = RunStatus.OK
         else:
             status = RunStatus.EXECUTION_FAILED
-        return {"result": result, "status": status}
+        update: SupervisorState = {"result": result, "status": status}
+        # Surface node-level failures on the supervisor's errors channel — the
+        # documented place callers read structured errors from. They were
+        # previously visible only inside the inner state envelope (and thus
+        # invisible to `SupervisorResult.errors` / the SDK's `result.errors`).
+        inner_errors = [
+            {
+                "stage": "execute",
+                "type": str(entry.get("type", "Error")),
+                "message": str(entry.get("message", "")),
+                "node_id": entry.get("node_id"),
+            }
+            for entry in (result.state or {}).get("errors", []) or []
+            if isinstance(entry, dict)
+        ]
+        if inner_errors:
+            update["errors"] = inner_errors
+        return update
 
     return execute
 
 
 def _make_record_node(recorder: Recorder):
     def record(state: SupervisorState) -> SupervisorState:
-        if state.get("validated_spec") is None or state.get("result") is None:
-            return {}
+        # A run that produced an ExecutionResult records normally. A run that
+        # failed earlier (plan/validate/compile, or the executor raised) still
+        # leaves a failure record — those are exactly the attempts you most
+        # want evidence for. Recording problems never mask the run's own
+        # outcome: only a run that actually succeeded is downgraded to
+        # RECORD_FAILED; a failed run keeps its failure status and the record
+        # error is appended to `errors`.
+        if state.get("validated_spec") is not None and state.get("result") is not None:
+            try:
+                rec = recorder.record(
+                    spec=state["validated_spec"],
+                    result=state["result"],
+                    prompt=state.get("prompt"),
+                )
+            except Exception as exc:
+                update: SupervisorState = {
+                    "errors": [
+                        {
+                            "stage": "record",
+                            "type": type(exc).__name__,
+                            "message": str(exc),
+                        }
+                    ],
+                }
+                if state.get("status") == RunStatus.OK:
+                    update["status"] = RunStatus.RECORD_FAILED
+                return update
+            return {"record": rec}
 
+        # Pre-execution failure: persist what exists (prompt, errors, the
+        # rejected spec). Feature-detected so custom Recorder implementations
+        # without `record_failure` keep working; failures here never override
+        # the run's own failure status.
+        record_failure = getattr(recorder, "record_failure", None)
+        if record_failure is None:
+            return {}
         try:
-            rec = recorder.record(
-                spec=state["validated_spec"],
-                result=state["result"],
+            rec = record_failure(
+                run_id=state["run_id"],
+                status=str(state.get("status", "unknown")),
                 prompt=state.get("prompt"),
+                errors=list(state.get("errors", []) or []),
+                rejected_spec=state.get("last_rejected_spec") or state.get("spec"),
+                overwrite=True,
             )
         except Exception as exc:
             return {
-                "status": RunStatus.RECORD_FAILED,
                 "errors": [
                     {
                         "stage": "record",
@@ -286,7 +355,7 @@ def _make_record_node(recorder: Recorder):
                     }
                 ],
             }
-        return {"record": rec}
+        return {"record": rec} if rec is not None else {}
 
     return record
 
@@ -313,8 +382,17 @@ def _make_respond_node():
                 f"{last_error.get('message', 'unknown error')}"
             )
         elif status == RunStatus.EXECUTION_FAILED:
-            inner_error = state["result"].error or "unknown inner error"
-            response = f"Run executed but reported failure: {inner_error}"
+            result = state.get("result")
+            if result is not None:
+                inner_error = result.error or "unknown inner error"
+                response = f"Run executed but reported failure: {inner_error}"
+            else:
+                # The executor itself raised — there is no ExecutionResult.
+                last_error = (state.get("errors") or [{}])[-1]
+                response = (
+                    "Run execution failed: "
+                    f"{last_error.get('message', 'unknown executor error')}"
+                )
         elif status == RunStatus.RECORD_FAILED:
             last_error = (state.get("errors") or [{}])[-1]
             response = (
