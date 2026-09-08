@@ -11,3 +11,4 @@ class NodeKind(StrEnum):
     WAIT_FOR_EVENT = "wait_for_event"
     EMIT_ARTIFACT = "emit_artifact"
     SPAWN_SUBGRAPH = "spawn_subgraph"
+    GAUNTLET = "gauntlet"

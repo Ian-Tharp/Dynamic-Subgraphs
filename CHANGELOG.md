@@ -7,6 +7,23 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
 
 ## [Unreleased]
 
+### Added
+- **`gauntlet` node kind.** A builder/critic loop against a concrete reference,
+  run inside one node so the outer graph stays a DAG (`app/runtime/gauntlet.py`).
+  Each round plans and runs a builder child through the same `ChildLauncher`
+  as `spawn_subgraph` (depth-capped, budget-clamped, recorded as
+  `<parent>__gl_<name>_r<round>`), then a fresh-context critic compares the
+  artifact with `state.values[reference_key]` under a sealed, replay-stable A/B
+  mapping and returns the winner plus the single largest gap, which briefs the
+  next round. Stops on `won`, `max_rounds` (1–5), `budget` (a round is never
+  launched without one builder call plus one critic call left), `deadline`,
+  `builder_failed` (keeps the best artifact so far), or `repeated_gap` (the
+  same gap three times; the second occurrence tells the builder to measure
+  before complying). The validator requires `reference_key` in the node's
+  `inputs`; spend rolls up via `__spend__` like `spawn_subgraph`. Assembly wires
+  the judge-role model as the critic on the LLM path and a token-free length
+  critic on the mock path.
+
 Governance and contract fixes from a code review: the budget, resume, and
 error-reporting behaviors the docs promise are now actually enforced.
 

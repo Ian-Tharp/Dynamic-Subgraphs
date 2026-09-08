@@ -9,6 +9,12 @@ from app.registry.definitions import NodeKindDefinition, default_kind_definition
 from app.registry.errors import RegistryValidationError, RegistryValidationIssue
 from app.registry.params import ParallelMapParams, ToolCallParams
 
+# Kinds whose LLM spend is reported by the runner at runtime (`__spend__`)
+# rather than counted per node by the wrapper.
+_RUNTIME_ROLLUP_KINDS: frozenset[NodeKind] = frozenset(
+    {NodeKind.SPAWN_SUBGRAPH, NodeKind.GAUNTLET}
+)
+
 
 class Registry:
     """Bounded vocabulary: which node kinds exist and what they may reference."""
@@ -176,12 +182,13 @@ class Registry:
         so the runtime ledger and the planner's static estimate agree on what
         counts. `parallel_map` is excluded here: its per-fan-out child calls
         are counted at runtime by the worker, not by the dispatcher node.
-        `spawn_subgraph` is also excluded: it makes no *direct* call — its
-        child's actual spend is rolled up into the ledger separately (the
-        `counts_as_llm_call=True` flag is only the planner's static floor), so
-        counting it here too would double-count the rolled-up child.
+        `spawn_subgraph` and `gauntlet` are also excluded: they make no
+        *direct* call — their children's actual spend is rolled up into the
+        ledger separately (the `counts_as_llm_call=True` flag is only the
+        planner's static floor), so counting them here too would double-count
+        the rolled-up child.
         """
-        if node.kind == NodeKind.SPAWN_SUBGRAPH:
+        if node.kind in _RUNTIME_ROLLUP_KINDS:
             return False
         definition = self._kinds.get(node.kind)
         if definition is None:

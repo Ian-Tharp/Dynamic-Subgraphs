@@ -135,6 +135,24 @@ Required params per executable kind (omitting these will fail validation):
   single step, just use `llm_call` or `tool_call` — do NOT wrap one call in a
   subgraph. Children may not use `wait_for_event` (no durable pause inside a
   child). Keep nesting shallow.
+- `gauntlet` -> {{ "sub_goal": "<what the builder must produce>",
+                  "name": "<short_snake_case_id>",
+                  "reference_key": "<parent_state_key holding the reference to beat>",
+                  "artifact_key": "<child output key treated as the artifact>" (optional, default "artifact"),
+                  "max_rounds": 1-5 (optional, default 3),
+                  "inputs_from": ["<parent_state_key>", ...] (optional) }}
+  Builder/critic loop against a concrete reference. Each round plans and runs
+  a CHILD graph from `sub_goal` (one level deeper, budget-clamped like
+  `spawn_subgraph`), then a separate blind critic compares its artifact with
+  `state.values[<reference_key>]` and names the single largest gap, which
+  briefs the next round. Stops when ours wins, on `max_rounds`, when the
+  budget runs out, or when the same gap repeats. `reference_key` MUST appear
+  in this node's `inputs`, produced upstream (e.g. a `tool_call` that fetched
+  the reference, or a seeded input). `outputs[0]` receives a dict:
+  {{ "artifact", "winner": "ours"|"bar", "stop_reason", "gap", "rounds" }}.
+  Use this ONLY when the user names a concrete artifact to beat or match;
+  never invent a reference. Losing to a strong reference is normal — the
+  best artifact so far is still returned.
 
 Edges connect node ids. `START` and `END` are literal string sentinels —
 not node ids you declare in `nodes`. Every graph needs at least one edge

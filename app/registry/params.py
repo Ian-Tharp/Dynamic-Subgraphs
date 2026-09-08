@@ -75,6 +75,26 @@ class SpawnSubgraphParams(BaseModel):
     inputs_from: list[str] = Field(default_factory=list)
 
 
+class GauntletParams(BaseModel):
+    """Run a bounded builder/critic loop against a cached reference.
+
+    `sub_goal` briefs the builder child graph (planned at runtime, one level
+    deeper, like `spawn_subgraph`). `reference_key` names the parent state
+    value holding the reference artifact to beat — it must be in the node's
+    `inputs` so provenance is validated. Each round a fresh-context critic
+    compares the builder's artifact with the reference blind and returns the
+    winner plus one gap; the gap briefs the next round. `artifact_key` is the
+    child value treated as the artifact (falls back to all child values).
+    """
+
+    sub_goal: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    reference_key: str = Field(min_length=1)
+    artifact_key: str = Field(default="artifact", min_length=1)
+    max_rounds: int = Field(default=3, ge=1, le=5)
+    inputs_from: list[str] = Field(default_factory=list)
+
+
 PARAM_MODEL_BY_KIND: dict[NodeKind, type[BaseModel]] = {
     NodeKind.LLM_CALL: LlmCallParams,
     NodeKind.TOOL_CALL: ToolCallParams,
@@ -85,4 +105,5 @@ PARAM_MODEL_BY_KIND: dict[NodeKind, type[BaseModel]] = {
     NodeKind.WAIT_FOR_EVENT: WaitForEventParams,
     NodeKind.EMIT_ARTIFACT: EmitArtifactParams,
     NodeKind.SPAWN_SUBGRAPH: SpawnSubgraphParams,
+    NodeKind.GAUNTLET: GauntletParams,
 }
