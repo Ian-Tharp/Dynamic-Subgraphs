@@ -325,6 +325,8 @@ def build_gauntlet_runner(
                 except GraphBubbleUp:
                     raise
                 except Exception as exc:
+                    # A billed planner call is invisible once the launcher raises.
+                    spent["llm_calls"] += int(getattr(exc, "llm_calls_spent", 0))
                     if best is None:
                         raise
                     logger.warning(

@@ -273,52 +273,59 @@ def make_child_launcher(
             planner_call_charged = True
             if max_llm_calls is not None:
                 max_llm_calls = max_llm_calls - 1
-        if spec is None:
-            spec = planner(sub_goal)
-        # Cap the child's budget to the parent's REMAINING allowance (nodes, LLM
-        # calls, depth) before validation; an oversized child then fails closed
-        # against the host policy rather than overspending the nest.
-        budget_update: dict[str, Any] = {}
-        if max_llm_calls is not None:
-            budget_update["max_llm_calls"] = min(
-                spec.budget.max_llm_calls, max_llm_calls
-            )
-        if max_nodes is not None:
-            budget_update["max_nodes"] = min(spec.budget.max_nodes, max_nodes)
-        if max_depth is not None:
-            budget_update["max_depth"] = min(spec.budget.max_depth, max_depth)
-        if budget_update:
-            spec = spec.model_copy(
-                update={"budget": spec.budget.model_copy(update=budget_update)}
-            )
-        # The host policy applies to the child too: a nested graph can never
-        # grant itself a larger budget than the host (the parent's remaining LLM
-        # allowance is already folded into spec.budget above).
-        validated = validate_graph_spec(spec, registry, policy=policy)
-        if any(node.kind == NodeKind.WAIT_FOR_EVENT for node in validated.nodes):
-            raise SubgraphContainsWaitForEvent(
-                f"child subgraph {run_id!r} contains a wait_for_event node; "
-                "durable pause is not allowed inside a nested subgraph "
-                "(synchronous children only in v1)"
-            )
+        try:
+            if spec is None:
+                spec = planner(sub_goal)
+            # Cap the child's budget to the parent's REMAINING allowance (nodes, LLM
+            # calls, depth) before validation; an oversized child then fails closed
+            # against the host policy rather than overspending the nest.
+            budget_update: dict[str, Any] = {}
+            if max_llm_calls is not None:
+                budget_update["max_llm_calls"] = min(
+                    spec.budget.max_llm_calls, max_llm_calls
+                )
+            if max_nodes is not None:
+                budget_update["max_nodes"] = min(spec.budget.max_nodes, max_nodes)
+            if max_depth is not None:
+                budget_update["max_depth"] = min(spec.budget.max_depth, max_depth)
+            if budget_update:
+                spec = spec.model_copy(
+                    update={"budget": spec.budget.model_copy(update=budget_update)}
+                )
+            # The host policy applies to the child too: a nested graph can never
+            # grant itself a larger budget than the host (the parent's remaining LLM
+            # allowance is already folded into spec.budget above).
+            validated = validate_graph_spec(spec, registry, policy=policy)
+            if any(node.kind == NodeKind.WAIT_FOR_EVENT for node in validated.nodes):
+                raise SubgraphContainsWaitForEvent(
+                    f"child subgraph {run_id!r} contains a wait_for_event node; "
+                    "durable pause is not allowed inside a nested subgraph "
+                    "(synchronous children only in v1)"
+                )
 
-        child_metadata: dict[str, Any] = {
-            "graph_depth": graph_depth,
-            "parent_run_id": parent_run_id,
-        }
-        if wall_deadline is not None:
-            # One deadline spans the whole nest: the child reuses the parent's
-            # absolute deadline rather than minting a fresh max_wall_seconds.
-            child_metadata["wall_deadline_monotonic"] = wall_deadline
-        if replay_of is not None:
-            # Propagate replay so a grandchild also pins to its recorded spec.
-            child_metadata["replay_of"] = replay_of
-        result = executor.execute(
-            executor.compile(validated),
-            run_id=run_id,
-            inputs=inputs or None,
-            initial_metadata=child_metadata,
-        )
+            child_metadata: dict[str, Any] = {
+                "graph_depth": graph_depth,
+                "parent_run_id": parent_run_id,
+            }
+            if wall_deadline is not None:
+                # One deadline spans the whole nest: the child reuses the parent's
+                # absolute deadline rather than minting a fresh max_wall_seconds.
+                child_metadata["wall_deadline_monotonic"] = wall_deadline
+            if replay_of is not None:
+                # Propagate replay so a grandchild also pins to its recorded spec.
+                child_metadata["replay_of"] = replay_of
+            result = executor.execute(
+                executor.compile(validated),
+                run_id=run_id,
+                inputs=inputs or None,
+                initial_metadata=child_metadata,
+            )
+        except Exception as exc:
+            # The planner call was billed even though the child never finished;
+            # let the caller (spawn_subgraph / gauntlet) account for it.
+            if planner_call_charged:
+                exc.llm_calls_spent = 1  # type: ignore[attr-defined]
+            raise
         if recorder is not None:
             # Best-effort: a child that ran shouldn't fail because persistence did.
             # Log a breadcrumb so a chronically failing recorder (which silently

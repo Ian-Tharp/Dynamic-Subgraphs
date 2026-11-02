@@ -219,6 +219,24 @@ def test_critic_exception_keeps_latest_artifact() -> None:
     assert out["__spend__"]["llm_calls_consumed"] == 2  # builder + billed critic
 
 
+def test_builder_exception_reports_billed_planner_call() -> None:
+    calls, seen = [], []
+
+    def launch(sub_goal, *, run_id, graph_depth, parent_run_id, inputs, **extra):
+        calls.append(run_id)
+        if len(calls) == 2:
+            exc = RuntimeError("child spec invalid")
+            exc.llm_calls_spent = 1  # what make_child_launcher attaches
+            raise exc
+        return ChildResult(values={"artifact": "v1"}, counters={}, status="ok")
+
+    runner = build_gauntlet_runner(launch, _scripted_critic([("bar", "x")] * 2, seen))
+    out = runner(_state(), _PARAMS)
+
+    assert out["result"]["stop_reason"] == "builder_failed"
+    assert out["__spend__"]["llm_calls_consumed"] == 2  # critic round 1 + planner
+
+
 def test_first_round_exception_still_raises() -> None:
     def launch(*a, **k):
         raise RuntimeError("nothing to salvage")

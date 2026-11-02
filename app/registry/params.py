@@ -10,7 +10,9 @@ from app.models.node_kinds import NodeKind
 # (`<parent>__sg_<name>`), which becomes a directory name, ledger key and
 # checkpointer thread_id — keep them to the safe run-id charset.
 _SAFE_NAME_PATTERN = r"^[A-Za-z0-9_-]+$"
-_MAX_NAME_LENGTH = 64
+_MAX_NAME_LENGTH = (
+    32  # nested run_ids grow ~name+6 per level; keep Windows paths < MAX_PATH
+)
 
 
 class LlmCallParams(BaseModel):

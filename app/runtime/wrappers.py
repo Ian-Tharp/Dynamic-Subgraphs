@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
-from time import perf_counter
+from time import monotonic, perf_counter
 from typing import TYPE_CHECKING, Any
 
 from langgraph.errors import GraphBubbleUp
@@ -49,6 +49,17 @@ def run_halted(state: Mapping[str, Any]) -> bool:
     that is concurrency, not a leak.
     """
     return bool(state.get("errors"))
+
+
+_MAX_RESERVATION_WAIT_SECONDS = 600.0
+
+
+def _reservation_wait(state: Mapping[str, Any]) -> float:
+    """How long a plain LLM node may wait for a sibling spawn/gauntlet to refund."""
+    deadline = (state.get("metadata", {}) or {}).get("wall_deadline_monotonic")
+    if deadline is None:
+        return _MAX_RESERVATION_WAIT_SECONDS
+    return max(0.0, min(float(deadline) - monotonic(), _MAX_RESERVATION_WAIT_SECONDS))
 
 
 def make_node_wrapper(
@@ -108,6 +119,7 @@ def make_node_wrapper(
                         amount=1,
                         budget=int(budget_raw),
                         consumed=consumed,
+                        wait_seconds=_reservation_wait(state),
                     )
                 else:
                     over = consumed + 1 > int(budget_raw)

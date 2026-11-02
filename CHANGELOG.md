@@ -32,13 +32,18 @@ error-reporting behaviors the docs promise are now actually enforced.
   `wait_for_event`) no-op instead of spending LLM calls or pausing after a failure.
 - `max_llm_calls` gate in the node wrapper charges the shared per-run ledger, so
   same-superstep siblings and `spawn_subgraph` reservations can't jointly overshoot.
+  A plain LLM node blocked only by a sibling's open reservation waits for its
+  refund (bounded by the wall deadline) rather than failing on thread timing.
 - `FileArtifactSink` rejects traversal/unsafe `run_id`s and sanitizes names
-  (leading dots, Windows device names, length).
-- `spawn_subgraph`/`gauntlet` `name` limited to the safe run-id charset (max 64);
+  (leading dots, Windows device names, length); lossy renames get a hash suffix so
+  distinct names can't overwrite each other, and Windows-reserved/trailing-dot
+  `run_id`s are rejected.
+- `spawn_subgraph`/`gauntlet` `name` limited to the safe run-id charset (max 32);
   child `inputs_from` values are seeded into the child's `values` and not echoed back.
 - `gauntlet` returns the latest artifact (not a "best") and stops with
   `builder_failed`/`critic_failed` instead of discarding it when a builder or
-  critic raises after a round has produced one.
+  critic raises after a round has produced one; a billed planner call from a
+  failed builder launch is now counted in the gauntlet's spend.
 - **Runtime LLM-call budget enforcement.** `max_llm_calls` is now a hard
   ceiling on actual spend, not just plan shape: the node wrapper refuses to
   start an LLM-consuming node once the cumulative count reaches the granted

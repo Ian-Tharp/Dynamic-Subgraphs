@@ -301,7 +301,12 @@ def test_file_sink_accepts_nested_child_run_id(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     ("name", "stem"),
-    [("..", "artifact"), (".hidden", "hidden"), ("CON", "_CON"), ("nul.x", "_nul.x")],
+    [
+        ("..", "artifact-"),
+        (".hidden", "hidden-"),
+        ("CON", "_CON-"),
+        ("nul.x", "_nul.x-"),
+    ],
 )
 def test_file_sink_name_edge_cases_stay_safe(
     tmp_path: Path, name: str, stem: str
@@ -311,9 +316,33 @@ def test_file_sink_name_edge_cases_stay_safe(
     ref = sink.emit(name=name, artifact_type="report", content="x", run_id="r")
 
     path = Path(ref["path"])
-    assert path.name == f"{stem}.md"
+    assert path.name.startswith(stem) and path.suffix == ".md"
     assert path.parent == tmp_path / "r" / "artifacts"
     assert path.exists()
+
+
+@pytest.mark.parametrize("pair", [(".env", "env"), ("n" * 150 + "a", "n" * 150 + "b")])
+def test_file_sink_lossy_names_do_not_collide(
+    tmp_path: Path, pair: tuple[str, str]
+) -> None:
+    sink = FileArtifactSink(root_dir=tmp_path)
+
+    paths = {
+        sink.emit(name=n, artifact_type="report", content=n, run_id="r")["path"]
+        for n in pair
+    }
+
+    assert len(paths) == 2
+
+
+@pytest.mark.parametrize("bad", ["CON", "nul", "aux.v1", "COM1", "run."])
+def test_file_sink_rejects_windows_reserved_or_trailing_dot_run_id(
+    tmp_path: Path, bad: str
+) -> None:
+    sink = FileArtifactSink(root_dir=tmp_path)
+
+    with pytest.raises(ValueError, match="unsafe run_id"):
+        sink.emit(name="a", artifact_type="report", content="x", run_id=bad)
 
 
 def test_file_sink_truncates_very_long_names(tmp_path: Path) -> None:

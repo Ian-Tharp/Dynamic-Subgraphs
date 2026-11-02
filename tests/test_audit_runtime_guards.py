@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -164,23 +165,53 @@ def test_llm_node_gate_is_atomic_across_same_superstep_siblings(make_node) -> No
     assert sorted(outcomes) == ["LlmCallBudgetExceeded", "ran"], outcomes
 
 
-def test_llm_node_refused_when_spawn_reservation_holds_the_budget(make_node) -> None:
+def _reserved_ledger(budget: int) -> BudgetLedger:
     ledger = BudgetLedger()
     # A concurrent spawn_subgraph sibling already reserved the whole remainder.
-    ledger.reserve(budgets={"llm_calls": 3}, consumed={"llm_calls": 0})
+    ledger.reserve(budgets={"llm_calls": budget}, consumed={"llm_calls": 0})
+    return ledger
 
+
+def _plain_wrapper(make_node, ledger: BudgetLedger, ran: list[str]):
     def runner(state: Any, params: dict[str, Any]) -> dict[str, Any]:
-        raise AssertionError("runner must not fire once the budget is reserved")
+        ran.append("ran")
+        return {"result": "ok"}
 
-    wrapper = make_node_wrapper(
+    return make_node_wrapper(
         make_node("a", outputs=["a"]),
         runner,
         counts_as_llm_call=True,
         ledger_registry={"r": ledger},
     )
-    result = wrapper(_wrapper_state(consumed=0, budget=3))
 
-    assert _is_budget_halt(result)
+
+def test_llm_node_waits_for_spawn_refund_instead_of_failing(make_node) -> None:
+    ledger = _reserved_ledger(3)
+    ran: list[str] = []
+    # The spawn child finishes having spent 1 of its 3-call reservation.
+    threading.Timer(
+        0.1,
+        ledger.refund,
+        kwargs={"reserved": {"llm_calls": 3}, "spent": {"llm_calls": 1}},
+    ).start()
+
+    result = _plain_wrapper(make_node, ledger, ran)(_wrapper_state(0, 3))
+
+    assert ran == ["ran"] and not _is_budget_halt(result)
+
+
+def test_llm_node_refused_when_spawn_child_spent_the_whole_budget(make_node) -> None:
+    ledger = _reserved_ledger(3)
+    ran: list[str] = []
+    threading.Timer(
+        0.1,
+        ledger.refund,
+        kwargs={"reserved": {"llm_calls": 3}, "spent": {"llm_calls": 3}},
+    ).start()
+
+    result = _plain_wrapper(make_node, ledger, ran)(_wrapper_state(0, 3))
+
+    assert ran == [] and _is_budget_halt(result)
 
 
 def _is_budget_halt(result: Any) -> bool:
@@ -188,3 +219,14 @@ def _is_budget_halt(result: Any) -> bool:
         return False
     update = result.update
     return any(e.get("type") == "LlmCallBudgetExceeded" for e in update["errors"])
+
+
+def test_spawn_and_gauntlet_names_are_capped() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    from app.registry.params import SpawnSubgraphParams
+
+    SpawnSubgraphParams(sub_goal="g", name="n" * 32)
+    with pytest.raises(ValidationError):
+        SpawnSubgraphParams(sub_goal="g", name="n" * 33)

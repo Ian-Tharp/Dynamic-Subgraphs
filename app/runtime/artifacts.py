@@ -20,6 +20,7 @@ free to attach any additional fields (e.g., `path` for filesystem,
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -187,15 +188,28 @@ def _check_scope(run_id: str) -> str:
     """Reject run ids that could leave the root (same charset as the recorder's
     `validate_run_id`; duplicated because recording imports runtime, not vice versa).
     """
-    if not all(c in _SAFE_SCOPE_CHARS for c in run_id) or set(run_id) == {"."}:
+    if (
+        not all(c in _SAFE_SCOPE_CHARS for c in run_id)
+        or set(run_id) == {"."}
+        or run_id.endswith(".")  # Windows strips trailing dots -> aliases another dir
+        or run_id.split(".")[0].upper() in _WINDOWS_RESERVED
+    ):
         raise ValueError(f"emit_artifact: unsafe run_id {run_id!r}")
     return run_id
 
 
 def _sanitize_filename(name: str) -> str:
-    """Coerce an artifact name to a filesystem-safe basename."""
+    """Coerce an artifact name to a filesystem-safe basename.
+
+    Lossy steps (stripped leading dots, truncation, reserved device names) append a
+    short hash of the original name so distinct names can't collide on one file.
+    """
     safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in name)
-    safe = safe.lstrip(".")[:100] or "artifact"
+    stripped = safe.lstrip(".")
+    lossy = stripped != safe or len(stripped) > 100 or not stripped
+    safe = stripped[:100] or "artifact"
     if safe.split(".")[0].upper() in _WINDOWS_RESERVED:
-        safe = f"_{safe}"
+        safe, lossy = f"_{safe}", True
+    if lossy:
+        safe += "-" + hashlib.sha256(name.encode()).hexdigest()[:8]
     return safe
