@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Protocol
 
 from app.models import DynamicRunState
+from app.run_id import WINDOWS_RESERVED, validate_run_id
 
 
 class ArtifactSink(Protocol):
@@ -109,7 +110,8 @@ class FileArtifactSink:
         run_id: str | None = None,
     ) -> dict[str, Any]:
         scope = run_id or "_unscoped"
-        target_dir = self._root / _check_scope(scope) / "artifacts"
+        validate_run_id(scope)
+        target_dir = self._root / scope / "artifacts"
         # Backstop: the resolved destination must stay under the root.
         if not target_dir.resolve().is_relative_to(self._root.resolve()):
             raise ValueError(f"run_id {run_id!r} resolves outside the artifacts root")
@@ -174,41 +176,18 @@ def make_emit_artifact_runner(
     return _runner
 
 
-_SAFE_SCOPE_CHARS = frozenset(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_."
-)
-# Windows device names: `CON.txt` opens the device, not a file.
-_WINDOWS_RESERVED = frozenset(
-    {"CON", "PRN", "AUX", "NUL"}
-    | {f"{d}{i}" for d in ("COM", "LPT") for i in range(1, 10)}
-)
-
-
-def _check_scope(run_id: str) -> str:
-    """Reject run ids that could leave the root (same charset as the recorder's
-    `validate_run_id`; duplicated because recording imports runtime, not vice versa).
-    """
-    if (
-        not all(c in _SAFE_SCOPE_CHARS for c in run_id)
-        or set(run_id) == {"."}
-        or run_id.endswith(".")  # Windows strips trailing dots -> aliases another dir
-        or run_id.split(".")[0].upper() in _WINDOWS_RESERVED
-    ):
-        raise ValueError(f"emit_artifact: unsafe run_id {run_id!r}")
-    return run_id
-
-
 def _sanitize_filename(name: str) -> str:
     """Coerce an artifact name to a filesystem-safe basename.
 
-    Lossy steps (stripped leading dots, truncation, reserved device names) append a
-    short hash of the original name so distinct names can't collide on one file.
+    Any lossy step (replaced characters, stripped leading dots, truncation, reserved
+    device names) appends a short hash of the original name so distinct names can't
+    collide on one file (`a b` vs `a_b`).
     """
     safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in name)
     stripped = safe.lstrip(".")
-    lossy = stripped != safe or len(stripped) > 100 or not stripped
+    lossy = safe != name or stripped != safe or len(stripped) > 100 or not stripped
     safe = stripped[:100] or "artifact"
-    if safe.split(".")[0].upper() in _WINDOWS_RESERVED:
+    if safe.split(".")[0].upper() in WINDOWS_RESERVED:
         safe, lossy = f"_{safe}", True
     if lossy:
         safe += "-" + hashlib.sha256(name.encode()).hexdigest()[:8]

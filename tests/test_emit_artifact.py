@@ -282,7 +282,7 @@ def test_file_sink_rejects_traversal_run_id(tmp_path: Path, bad: str) -> None:
     root = tmp_path / "root"
     sink = FileArtifactSink(root_dir=root)
 
-    with pytest.raises(ValueError, match="unsafe run_id"):
+    with pytest.raises(ValueError, match="run_id"):
         sink.emit(name="a", artifact_type="report", content="x", run_id=bad)
 
     assert not (tmp_path / "ESC").exists()
@@ -321,7 +321,15 @@ def test_file_sink_name_edge_cases_stay_safe(
     assert path.exists()
 
 
-@pytest.mark.parametrize("pair", [(".env", "env"), ("n" * 150 + "a", "n" * 150 + "b")])
+@pytest.mark.parametrize(
+    "pair",
+    [
+        (".env", "env"),
+        ("n" * 150 + "a", "n" * 150 + "b"),
+        ("a b", "a_b"),
+        ("a/b", "a?b"),
+    ],
+)
 def test_file_sink_lossy_names_do_not_collide(
     tmp_path: Path, pair: tuple[str, str]
 ) -> None:
@@ -341,7 +349,7 @@ def test_file_sink_rejects_windows_reserved_or_trailing_dot_run_id(
 ) -> None:
     sink = FileArtifactSink(root_dir=tmp_path)
 
-    with pytest.raises(ValueError, match="unsafe run_id"):
+    with pytest.raises(ValueError, match="run_id"):
         sink.emit(name="a", artifact_type="report", content="x", run_id=bad)
 
 

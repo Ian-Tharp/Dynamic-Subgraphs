@@ -411,10 +411,14 @@ def build_gauntlet_runner(
         if best is None:
             last_error = rounds[-1].get("error") if rounds else None
             detail = f"; last builder error: {last_error}" if last_error else ""
-            raise GauntletNoArtifact(
+            no_artifact = GauntletNoArtifact(
                 f"gauntlet {name!r} produced no artifact "
                 f"(stop_reason={stop_reason}{detail})"
             )
+            # Builder children may have run (and been billed) before failing.
+            no_artifact.llm_calls_spent = spent["llm_calls"]  # type: ignore[attr-defined]
+            no_artifact.nodes_spent = spent["nodes"]  # type: ignore[attr-defined]
+            raise no_artifact
         return {
             "result": {
                 "artifact": best,

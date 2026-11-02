@@ -33,11 +33,15 @@ error-reporting behaviors the docs promise are now actually enforced.
 - `max_llm_calls` gate in the node wrapper charges the shared per-run ledger, so
   same-superstep siblings and `spawn_subgraph` reservations can't jointly overshoot.
   A plain LLM node blocked only by a sibling's open reservation waits for its
-  refund (bounded by the wall deadline) rather than failing on thread timing.
+  refund (bounded by the wall deadline) rather than failing on thread timing; the
+  `parallel_map` fan-out charge waits the same way.
 - `FileArtifactSink` rejects traversal/unsafe `run_id`s and sanitizes names
-  (leading dots, Windows device names, length); lossy renames get a hash suffix so
-  distinct names can't overwrite each other, and Windows-reserved/trailing-dot
-  `run_id`s are rejected.
+  (leading dots, Windows device names, length); any lossy rename (including replaced
+  characters like `a b` -> `a_b`) gets a hash suffix so distinct names can't
+  overwrite each other.
+- One shared `run_id` rule (`app/run_id.py`) now backs both the recorder and the
+  artifact sink: Windows-reserved names (`CON`, `NUL`, ...) and trailing-dot ids
+  are rejected by both, so a run that records can also emit artifacts.
 - `spawn_subgraph`/`gauntlet` `name` limited to the safe run-id charset (max 32);
   child `inputs_from` values are seeded into the child's `values` and not echoed back.
 - `gauntlet` returns the latest artifact (not a "best") and stops with
@@ -46,7 +50,9 @@ error-reporting behaviors the docs promise are now actually enforced.
   failed builder launch is now counted in the gauntlet's spend.
 - `spawn_subgraph` (and the node wrapper) keep real spend when a child fails or its
   launcher raises after a billed planner call: the unspent part of the reservation
-  is refunded and the spend rolls up to the parent's `counters` instead of vanishing.
+  is refunded and the spend (LLM calls and nodes) rolls up to the parent's
+  `counters` instead of vanishing; `gauntlet` does the same when it ends with no
+  artifact.
 - **Runtime LLM-call budget enforcement.** `max_llm_calls` is now a hard
   ceiling on actual spend, not just plan shape: the node wrapper refuses to
   start an LLM-consuming node once the cumulative count reaches the granted

@@ -54,7 +54,7 @@ def run_halted(state: Mapping[str, Any]) -> bool:
 _MAX_RESERVATION_WAIT_SECONDS = 600.0
 
 
-def _reservation_wait(state: Mapping[str, Any]) -> float:
+def reservation_wait(state: Mapping[str, Any]) -> float:
     """How long a plain LLM node may wait for a sibling spawn/gauntlet to refund."""
     deadline = (state.get("metadata", {}) or {}).get("wall_deadline_monotonic")
     if deadline is None:
@@ -119,7 +119,7 @@ def make_node_wrapper(
                         amount=1,
                         budget=int(budget_raw),
                         consumed=consumed,
-                        wait_seconds=_reservation_wait(state),
+                        wait_seconds=reservation_wait(state),
                     )
                 else:
                     over = consumed + 1 > int(budget_raw)
@@ -183,7 +183,12 @@ def make_node_wrapper(
                     ],
                     "counters": add_counters(
                         node_counter_delta(counts_as_llm_call),
-                        {"llm_calls_consumed": int(getattr(exc, "llm_calls_spent", 0))},
+                        {
+                            "llm_calls_consumed": int(
+                                getattr(exc, "llm_calls_spent", 0)
+                            ),
+                            "nodes_executed": int(getattr(exc, "nodes_spent", 0)),
+                        },
                     ),
                 },
                 goto=END,

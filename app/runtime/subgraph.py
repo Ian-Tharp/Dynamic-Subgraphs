@@ -195,6 +195,7 @@ def build_spawn_subgraph_runner(
                 spent["llm_calls"], int(getattr(exc, "llm_calls_spent", 0))
             )
             exc.llm_calls_spent = spent["llm_calls"]  # type: ignore[attr-defined]
+            exc.nodes_spent = spent["nodes"]  # type: ignore[attr-defined]
             raise
         finally:
             # Return the unused portion of the reservation so an under-spending or

@@ -218,7 +218,9 @@ def _is_budget_halt(result: Any) -> bool:
     if not isinstance(result, Command):
         return False
     update = result.update
-    return any(e.get("type") == "LlmCallBudgetExceeded" for e in update["errors"])
+    return any(
+        e.get("type") == "LlmCallBudgetExceeded" for e in update.get("errors", [])
+    )
 
 
 def test_spawn_and_gauntlet_names_are_capped() -> None:
@@ -236,6 +238,7 @@ def test_failed_node_rolls_billed_spend_up_to_counters(make_node) -> None:
     def runner(state: Any, params: dict[str, Any]) -> dict[str, Any]:
         err = RuntimeError("child failed after a billed planner call")
         err.llm_calls_spent = 2
+        err.nodes_spent = 5
         raise err
 
     wrapper = make_node_wrapper(make_node("a", outputs=["a"]), runner)
@@ -243,3 +246,48 @@ def test_failed_node_rolls_billed_spend_up_to_counters(make_node) -> None:
 
     assert isinstance(result, Command)
     assert result.update["counters"]["llm_calls_consumed"] == 2
+    assert result.update["counters"]["nodes_executed"] == 1 + 5
+
+
+def test_parallel_map_dispatch_waits_for_spawn_refund(make_node) -> None:
+    from app.runtime.parallel_map import make_parallel_map_dispatcher
+
+    ledger = _reserved_ledger(3)
+    threading.Timer(
+        0.1,
+        ledger.refund,
+        kwargs={"reserved": {"llm_calls": 3}, "spent": {"llm_calls": 0}},
+    ).start()
+    node = make_node(
+        "fan",
+        NodeKind.PARALLEL_MAP,
+        outputs=["out"],
+        params={"over": "items", "child_kind": "llm_call"},
+    )
+    dispatch = make_parallel_map_dispatcher(
+        node,
+        worker_id="fan__w",
+        join_id="fan__j",
+        child_counts_as_llm_call=True,
+        ledger_registry={"r": ledger},
+    )
+    state = _wrapper_state(0, 3)
+    state["values"] = {"items": ["a", "b"]}
+
+    result = dispatch(state)
+
+    assert not _is_budget_halt(result)
+    assert len(result.goto) == 2  # both workers dispatched
+
+
+def test_recorder_and_artifact_sink_share_one_run_id_rule() -> None:
+    import pytest
+
+    from app.recording.recorder import validate_run_id as recorder_validate
+    from app.run_id import validate_run_id
+
+    assert recorder_validate is validate_run_id
+    for bad in ("con", "release.", "..", "a/b"):
+        with pytest.raises(ValueError):
+            recorder_validate(bad)
+    recorder_validate("p__sg_x.v1")

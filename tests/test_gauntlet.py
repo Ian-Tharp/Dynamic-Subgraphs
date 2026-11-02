@@ -237,6 +237,23 @@ def test_builder_exception_reports_billed_planner_call() -> None:
     assert out["__spend__"]["llm_calls_consumed"] == 2  # critic round 1 + planner
 
 
+def test_no_artifact_error_carries_billed_spend() -> None:
+    def launch(*a, **k):
+        return ChildResult(
+            values={},
+            counters={"llm_calls_consumed": 2, "nodes_executed": 3},
+            status="failed",
+            response="boom",
+        )
+
+    runner = build_gauntlet_runner(launch, _scripted_critic([], []))
+    with pytest.raises(GauntletNoArtifact) as exc:
+        runner(_state(), _PARAMS)
+
+    assert exc.value.llm_calls_spent == 2
+    assert exc.value.nodes_spent == 3
+
+
 def test_first_round_exception_still_raises() -> None:
     def launch(*a, **k):
         raise RuntimeError("nothing to salvage")

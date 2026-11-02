@@ -139,7 +139,10 @@ def test_runner_raises_when_child_fails() -> None:
 def test_failed_child_spend_is_attached_to_the_raised_error() -> None:
     def launcher(*args, **kwargs):
         return ChildResult(
-            values={}, counters={"llm_calls_consumed": 2}, status="failed", response="x"
+            values={},
+            counters={"llm_calls_consumed": 2, "nodes_executed": 4},
+            status="failed",
+            response="x",
         )
 
     runner = build_spawn_subgraph_runner(launcher)
@@ -147,6 +150,7 @@ def test_failed_child_spend_is_attached_to_the_raised_error() -> None:
     with pytest.raises(SubgraphChildFailed) as exc:
         runner(_state(), {"sub_goal": "g", "name": "c"})
     assert exc.value.llm_calls_spent == 2
+    assert exc.value.nodes_spent == 4
 
 
 def test_launcher_error_after_billed_planner_call_reports_spend_and_refunds_rest() -> (

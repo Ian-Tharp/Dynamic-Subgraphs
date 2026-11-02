@@ -32,14 +32,11 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from app.models import GraphSpec
 from app.recording.mermaid import render_mermaid
+from app.run_id import SAFE_RUN_ID_CHARS, validate_run_id
 from app.runtime import ExecutionResult
 
 if TYPE_CHECKING:
     from app.supervisor.iteration import IterationDecision, IterativeSupervisorResult
-
-_SAFE_RUN_ID_CHARS: frozenset[str] = frozenset(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_."
-)
 
 
 @dataclass(frozen=True)
@@ -541,7 +538,7 @@ class FileRecorder:
 
     def artifact_path(self, run_id: str, name: str) -> Path:
         validate_run_id(run_id)
-        name_ok = bool(name) and all(ch in _SAFE_RUN_ID_CHARS for ch in name)
+        name_ok = bool(name) and all(ch in SAFE_RUN_ID_CHARS for ch in name)
         if not name_ok or set(name) == {"."}:
             raise ValueError(f"artifact name contains unsafe characters: {name!r}")
         return self._contained(self._root / run_id / "artifacts" / name, run_id)
@@ -676,21 +673,6 @@ class NullRecorder:
             directory=self._root / result.chain_id,
             artifacts={},
         )
-
-
-def validate_run_id(run_id: str) -> None:
-    if not run_id:
-        raise ValueError("run_id must be non-empty")
-    if not all(ch in _SAFE_RUN_ID_CHARS for ch in run_id):
-        raise ValueError(
-            f"run_id contains unsafe characters (allowed: letters, digits, '-', '_', '.'): {run_id!r}"
-        )
-    # `.` is allowed *inside* an id (e.g. a model tag like "gpt-5.4"), but an id
-    # that is nothing but dots ('.', '..', ...) is a path-traversal token: with no
-    # separator in the charset, `run_dir("..")` would otherwise select the runs
-    # root's parent. Refuse it so a run_id can never escape the root.
-    if set(run_id) == {"."}:
-        raise ValueError(f"run_id may not be a bare dot path segment: {run_id!r}")
 
 
 def _extract_output(result: ExecutionResult) -> dict[str, object]:
