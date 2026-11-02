@@ -328,6 +328,7 @@ def build_gauntlet_runner(
                     # A billed planner call is invisible once the launcher raises.
                     spent["llm_calls"] += int(getattr(exc, "llm_calls_spent", 0))
                     if best is None:
+                        exc.llm_calls_spent = spent["llm_calls"]  # type: ignore[attr-defined]
                         raise
                     logger.warning(
                         "gauntlet %r builder round %d raised: %s", name, round_no, exc

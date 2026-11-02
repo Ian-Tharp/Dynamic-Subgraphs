@@ -136,6 +136,44 @@ def test_runner_raises_when_child_fails() -> None:
         runner(_state(), {"sub_goal": "g", "name": "c"})
 
 
+def test_failed_child_spend_is_attached_to_the_raised_error() -> None:
+    def launcher(*args, **kwargs):
+        return ChildResult(
+            values={}, counters={"llm_calls_consumed": 2}, status="failed", response="x"
+        )
+
+    runner = build_spawn_subgraph_runner(launcher)
+
+    with pytest.raises(SubgraphChildFailed) as exc:
+        runner(_state(), {"sub_goal": "g", "name": "c"})
+    assert exc.value.llm_calls_spent == 2
+
+
+def test_launcher_error_after_billed_planner_call_reports_spend_and_refunds_rest() -> (
+    None
+):
+    from app.runtime.budget_ledger import BudgetLedger
+
+    ledger = BudgetLedger()
+
+    def launcher(*args, **kwargs):
+        err = RuntimeError("child spec invalid")
+        err.llm_calls_spent = 1  # what make_child_launcher attaches
+        raise err
+
+    runner = build_spawn_subgraph_runner(launcher, ledger_registry={"root": ledger})
+    state = _state()
+    state["metadata"]["budget_max_llm_calls"] = 5
+
+    with pytest.raises(RuntimeError) as exc:
+        runner(state, {"sub_goal": "g", "name": "c"})
+
+    assert exc.value.llm_calls_spent == 1
+    # Only the 1 billed call stays pending; the other 4 went back to the pool.
+    assert ledger.try_charge(key="llm_calls", amount=4, budget=5, consumed=0)
+    assert not ledger.try_charge(key="llm_calls", amount=1, budget=5, consumed=0)
+
+
 def test_runner_composes_child_budget_against_parent_remaining() -> None:
     # The nest can't outspend the root: the child's node + LLM budgets are the
     # parent's REMAINING allowance, and depth is the tighter of host vs rail.

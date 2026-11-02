@@ -188,6 +188,14 @@ def build_spawn_subgraph_runner(
             # spawn node makes no *direct* LLM call, so all llm spend here is the
             # child's — no floor double-count.
             return {"result": dict(result.values), "__spend__": dict(result.counters)}
+        except Exception as exc:
+            # Real spend survives the failure: refund only the unspent part and
+            # let the node wrapper roll the spend up to the parent counters.
+            spent["llm_calls"] = max(
+                spent["llm_calls"], int(getattr(exc, "llm_calls_spent", 0))
+            )
+            exc.llm_calls_spent = spent["llm_calls"]  # type: ignore[attr-defined]
+            raise
         finally:
             # Return the unused portion of the reservation so an under-spending or
             # failed child frees budget for later siblings (spent stays 0 if the

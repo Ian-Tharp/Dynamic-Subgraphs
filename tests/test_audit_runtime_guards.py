@@ -230,3 +230,16 @@ def test_spawn_and_gauntlet_names_are_capped() -> None:
     SpawnSubgraphParams(sub_goal="g", name="n" * 32)
     with pytest.raises(ValidationError):
         SpawnSubgraphParams(sub_goal="g", name="n" * 33)
+
+
+def test_failed_node_rolls_billed_spend_up_to_counters(make_node) -> None:
+    def runner(state: Any, params: dict[str, Any]) -> dict[str, Any]:
+        err = RuntimeError("child failed after a billed planner call")
+        err.llm_calls_spent = 2
+        raise err
+
+    wrapper = make_node_wrapper(make_node("a", outputs=["a"]), runner)
+    result = wrapper(_wrapper_state(0, 10))
+
+    assert isinstance(result, Command)
+    assert result.update["counters"]["llm_calls_consumed"] == 2

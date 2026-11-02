@@ -44,6 +44,9 @@ error-reporting behaviors the docs promise are now actually enforced.
   `builder_failed`/`critic_failed` instead of discarding it when a builder or
   critic raises after a round has produced one; a billed planner call from a
   failed builder launch is now counted in the gauntlet's spend.
+- `spawn_subgraph` (and the node wrapper) keep real spend when a child fails or its
+  launcher raises after a billed planner call: the unspent part of the reservation
+  is refunded and the spend rolls up to the parent's `counters` instead of vanishing.
 - **Runtime LLM-call budget enforcement.** `max_llm_calls` is now a hard
   ceiling on actual spend, not just plan shape: the node wrapper refuses to
   start an LLM-consuming node once the cumulative count reaches the granted

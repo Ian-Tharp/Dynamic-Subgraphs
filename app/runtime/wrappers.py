@@ -181,7 +181,10 @@ def make_node_wrapper(
                         started.model_dump(mode="json"),
                         failed.model_dump(mode="json"),
                     ],
-                    "counters": node_counter_delta(counts_as_llm_call),
+                    "counters": add_counters(
+                        node_counter_delta(counts_as_llm_call),
+                        {"llm_calls_consumed": int(getattr(exc, "llm_calls_spent", 0))},
+                    ),
                 },
                 goto=END,
             )
