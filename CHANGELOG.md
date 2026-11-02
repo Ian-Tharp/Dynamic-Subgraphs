@@ -65,6 +65,17 @@ error-reporting behaviors the docs promise are now actually enforced.
 - `FileRecorder.record_failure(...)` / `NullRecorder.record_failure(...)` —
   pre-execution failure records (selection-aware).
 - SDK `RunStatus` gains `"engine_failed"`.
+- **Benchmark main-run readiness** (frozen rule in
+  `docs/evals/bench-dynamic-vs-fixed-2026-06.md` §4, unchanged):
+  `BenchArm` (public) + `run_benchmark(arms=...)` run several invented
+  sub-arms (A1 nano planner / A2 stronger planner) in one paired run;
+  `repeats` accepts a `task_type -> int` mapping; `ArmRunRow.planner_model`;
+  `bench.jsonl` rows are appended as produced (crash-safe). New 24-task
+  stratified pack `docs/evals/bench-tasks-main-v1.jsonl` (incl. the
+  topology-eliciting `synthesize` stratum), pinned config
+  `docs/evals/bench-main-v1.config.json`, and the internal one-command runner
+  `python -m dynamic_subgraphs._bench_main` (`--estimate` / `--dry-run` /
+  `--live`). Runbook: `docs/evals/bench-main-run-v1.md`.
 
 ## [0.5.0] — 2026-06-11
 
