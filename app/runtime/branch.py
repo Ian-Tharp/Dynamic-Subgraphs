@@ -25,6 +25,7 @@ from typing import Any
 from langgraph.graph import END
 
 from app.models import DynamicRunState, NodeSpec, TraceEvent, TraceEventKind
+from app.runtime.wrappers import run_halted
 
 
 def make_branch_node(
@@ -36,6 +37,8 @@ def make_branch_node(
     decision_key: str = node.params["decision_key"]
 
     def branch_fn(state: DynamicRunState) -> dict[str, Any]:
+        if run_halted(state):
+            return {}
         started_at = datetime.now(UTC)
         started_perf = perf_counter()
         start_event = TraceEvent(
@@ -95,6 +98,8 @@ def make_branch_router(node: NodeSpec) -> Callable[[DynamicRunState], str]:
     decision_key: str = node.params["decision_key"]
 
     def router(state: DynamicRunState) -> str:
+        if run_halted(state):
+            return END
         decision = (state.get("values") or {}).get(decision_key)
         if isinstance(decision, str) and decision in branches:
             return decision

@@ -189,6 +189,45 @@ def test_builder_failure_keeps_best_so_far() -> None:
     assert out["result"]["rounds"][-1]["builder"] == "failed"
 
 
+def test_builder_exception_keeps_latest_artifact() -> None:
+    calls, seen = [], []
+
+    def launch(sub_goal, *, run_id, graph_depth, parent_run_id, inputs, **extra):
+        calls.append(run_id)
+        if len(calls) == 2:
+            raise RuntimeError("launch blew up")
+        return ChildResult(values={"artifact": "v1"}, counters={}, status="ok")
+
+    runner = build_gauntlet_runner(launch, _scripted_critic([("bar", "x")] * 2, seen))
+    out = runner(_state(), _PARAMS)
+
+    assert out["result"]["stop_reason"] == "builder_failed"
+    assert out["result"]["artifact"] == "v1"
+
+
+def test_critic_exception_keeps_latest_artifact() -> None:
+    calls = []
+
+    def critic(a, b, *, goal):
+        raise RuntimeError("critic blew up")
+
+    runner = build_gauntlet_runner(_launcher(["v1", "v2"], calls), critic)
+    out = runner(_state(), _PARAMS)
+
+    assert out["result"]["stop_reason"] == "critic_failed"
+    assert out["result"]["artifact"] == "v1"
+    assert out["__spend__"]["llm_calls_consumed"] == 2  # builder + billed critic
+
+
+def test_first_round_exception_still_raises() -> None:
+    def launch(*a, **k):
+        raise RuntimeError("nothing to salvage")
+
+    runner = build_gauntlet_runner(launch, _scripted_critic([], []))
+    with pytest.raises(RuntimeError):
+        runner(_state(), _PARAMS)
+
+
 def test_deadline_stops_before_a_round() -> None:
     calls = []
     runner = build_gauntlet_runner(

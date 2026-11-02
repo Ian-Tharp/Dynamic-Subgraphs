@@ -108,7 +108,10 @@ class FileArtifactSink:
         run_id: str | None = None,
     ) -> dict[str, Any]:
         scope = run_id or "_unscoped"
-        target_dir = self._root / scope / "artifacts"
+        target_dir = self._root / _check_scope(scope) / "artifacts"
+        # Backstop: the resolved destination must stay under the root.
+        if not target_dir.resolve().is_relative_to(self._root.resolve()):
+            raise ValueError(f"run_id {run_id!r} resolves outside the artifacts root")
         target_dir.mkdir(parents=True, exist_ok=True)
 
         safe_name = _sanitize_filename(name)
@@ -170,7 +173,29 @@ def make_emit_artifact_runner(
     return _runner
 
 
+_SAFE_SCOPE_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_."
+)
+# Windows device names: `CON.txt` opens the device, not a file.
+_WINDOWS_RESERVED = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"{d}{i}" for d in ("COM", "LPT") for i in range(1, 10)}
+)
+
+
+def _check_scope(run_id: str) -> str:
+    """Reject run ids that could leave the root (same charset as the recorder's
+    `validate_run_id`; duplicated because recording imports runtime, not vice versa).
+    """
+    if not all(c in _SAFE_SCOPE_CHARS for c in run_id) or set(run_id) == {"."}:
+        raise ValueError(f"emit_artifact: unsafe run_id {run_id!r}")
+    return run_id
+
+
 def _sanitize_filename(name: str) -> str:
     """Coerce an artifact name to a filesystem-safe basename."""
     safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in name)
-    return safe or "artifact"
+    safe = safe.lstrip(".")[:100] or "artifact"
+    if safe.split(".")[0].upper() in _WINDOWS_RESERVED:
+        safe = f"_{safe}"
+    return safe

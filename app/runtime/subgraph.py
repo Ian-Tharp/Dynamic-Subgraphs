@@ -337,8 +337,15 @@ def make_child_launcher(
             # Report the planning call as part of this nest's spend so it rolls
             # up to the parent ledger like any other child LLM call.
             counters["llm_calls_consumed"] = counters.get("llm_calls_consumed", 0) + 1
+        # Seeded `inputs` live in the child's values; hand back only what the
+        # child produced (new or changed keys), not an echo of the parent's own.
+        child_values = {
+            k: v
+            for k, v in (state.get("values", {}) or {}).items()
+            if k not in inputs or v != inputs[k]
+        }
         return ChildResult(
-            values=dict(state.get("values", {}) or {}),
+            values=child_values,
             counters=counters,
             status="ok" if result.ok else "failed",
             response=result.error or "",

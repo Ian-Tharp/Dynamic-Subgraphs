@@ -6,6 +6,12 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.models.node_kinds import NodeKind
 
+# Planner-chosen child names are embedded in the child run_id
+# (`<parent>__sg_<name>`), which becomes a directory name, ledger key and
+# checkpointer thread_id — keep them to the safe run-id charset.
+_SAFE_NAME_PATTERN = r"^[A-Za-z0-9_-]+$"
+_MAX_NAME_LENGTH = 64
+
 
 class LlmCallParams(BaseModel):
     instruction: str = Field(min_length=1)
@@ -71,7 +77,7 @@ class SpawnSubgraphParams(BaseModel):
     """
 
     sub_goal: str = Field(min_length=1)
-    name: str = Field(min_length=1)
+    name: str = Field(pattern=_SAFE_NAME_PATTERN, max_length=_MAX_NAME_LENGTH)
     inputs_from: list[str] = Field(default_factory=list)
 
 
@@ -88,7 +94,7 @@ class GauntletParams(BaseModel):
     """
 
     sub_goal: str = Field(min_length=1)
-    name: str = Field(min_length=1)
+    name: str = Field(pattern=_SAFE_NAME_PATTERN, max_length=_MAX_NAME_LENGTH)
     reference_key: str = Field(min_length=1)
     artifact_key: str = Field(default="artifact", min_length=1)
     max_rounds: int = Field(default=3, ge=1, le=5)

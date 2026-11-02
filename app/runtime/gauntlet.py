@@ -19,8 +19,11 @@ mappings, and stop reason is returned as the node's output so it lands in the
 parent's recorded `output.json`.
 
 Losing to the bar is the expected outcome of a well-set bar; the node returns
-the best artifact so far and an honest `stop_reason` rather than reinterpreting
-a boundary as a win.
+the LATEST artifact (the critic only compares an artifact to the reference,
+never round to round, so "best" is not determinable) and an honest
+`stop_reason` rather than reinterpreting a boundary as a win. A builder or
+critic that raises after a round has produced an artifact stops the loop with
+`builder_failed` / `critic_failed` and still returns that artifact.
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
+from langgraph.errors import GraphBubbleUp
 from pydantic import BaseModel, Field
 
 from app.errors import DynamicSubgraphsError
@@ -48,7 +52,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 StopReason = Literal[
-    "won", "max_rounds", "repeated_gap", "budget", "deadline", "builder_failed"
+    "won",
+    "max_rounds",
+    "repeated_gap",
+    "budget",
+    "deadline",
+    "builder_failed",
+    "critic_failed",
 ]
 
 
@@ -202,6 +212,11 @@ def build_gauntlet_runner(
     `spawn_subgraph`), then spends it round by round: each builder child is
     granted what is left minus one call reserved for its critic, and the loop
     stops on `budget` before launching a round it cannot afford to judge.
+
+    The node returns the LATEST artifact (never a "best": rounds are only ever
+    compared to the reference). If a builder launch or critic call raises once
+    an artifact exists, the loop stops (`builder_failed` / `critic_failed`) and
+    that artifact is returned with the round log instead of being discarded.
     """
 
     def _runner(state: Mapping[str, Any], params: Mapping[str, Any]) -> dict[str, Any]:
@@ -292,20 +307,34 @@ def build_gauntlet_runner(
                     brief += f"\n\nPrevious attempt (improve on it):\n{best}"
 
                 child_run_id = f"{parent_run_id}__gl_{name}_r{round_no}"
-                result = launcher(
-                    brief,
-                    run_id=child_run_id,
-                    graph_depth=depth + 1,
-                    parent_run_id=parent_run_id,
-                    inputs=dict(inputs),
-                    max_llm_calls=None if llm_left is None else llm_left - 1,
-                    max_nodes=nodes_left,
-                    max_depth=effective_ceiling,
-                    wall_deadline=deadline,
-                    replay_of=f"{replay_of}__gl_{name}_r{round_no}"
-                    if replay_of
-                    else None,
-                )
+                try:
+                    result = launcher(
+                        brief,
+                        run_id=child_run_id,
+                        graph_depth=depth + 1,
+                        parent_run_id=parent_run_id,
+                        inputs=dict(inputs),
+                        max_llm_calls=None if llm_left is None else llm_left - 1,
+                        max_nodes=nodes_left,
+                        max_depth=effective_ceiling,
+                        wall_deadline=deadline,
+                        replay_of=f"{replay_of}__gl_{name}_r{round_no}"
+                        if replay_of
+                        else None,
+                    )
+                except GraphBubbleUp:
+                    raise
+                except Exception as exc:
+                    if best is None:
+                        raise
+                    logger.warning(
+                        "gauntlet %r builder round %d raised: %s", name, round_no, exc
+                    )
+                    rounds.append(
+                        {"round": round_no, "builder": "failed", "error": str(exc)}
+                    )
+                    stop_reason = "builder_failed"
+                    break
                 spent["llm_calls"] += int(result.counters.get("llm_calls_consumed", 0))
                 spent["nodes"] += int(result.counters.get("nodes_executed", 0))
                 if result.status != "ok":
@@ -330,7 +359,22 @@ def build_gauntlet_runner(
                     f"{replay_of or parent_run_id}:{name}:{round_no}"
                 )
                 a, b = (artifact, reference) if ours_is_a else (reference, artifact)
-                verdict = critic(a, b, goal=sub_goal)
+                try:
+                    verdict = critic(a, b, goal=sub_goal)
+                except GraphBubbleUp:
+                    raise
+                except Exception as exc:
+                    # The call may have been billed even though it raised.
+                    spent["llm_calls"] += 1
+                    logger.warning(
+                        "gauntlet %r critic round %d raised: %s", name, round_no, exc
+                    )
+                    best = artifact
+                    rounds.append(
+                        {"round": round_no, "critic": "failed", "error": str(exc)}
+                    )
+                    stop_reason = "critic_failed"
+                    break
                 spent["llm_calls"] += 1
                 ours_won = (verdict.winner == "A") == ours_is_a
                 rounds.append(

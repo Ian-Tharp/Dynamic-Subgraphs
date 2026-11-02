@@ -37,7 +37,7 @@ from langgraph.types import Command, Send
 from app.models import DynamicRunState, NodeKind, NodeSpec, TraceEvent, TraceEventKind
 from app.runtime.budget_ledger import BudgetLedger
 from app.runtime.runners import NodeRunner
-from app.runtime.wrappers import node_counter_delta
+from app.runtime.wrappers import node_counter_delta, run_halted
 
 # Per-Send payload keys (live in state.values for the worker's branch only)
 # Fallback fan-out cap when metadata carries none (e.g. a direct-executor test
@@ -99,6 +99,8 @@ def make_parallel_map_dispatcher(
     output_key = _output_key(node)
 
     def dispatch(state: DynamicRunState) -> Command:
+        if run_halted(state):
+            return Command(goto=END)
         started_at = datetime.now(UTC)
         started_perf = perf_counter()
         start_event = TraceEvent(

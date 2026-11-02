@@ -96,6 +96,7 @@ def build_graph(
                     node,
                     available_runners[node.kind],
                     counts_as_llm_call=reg.counts_as_llm_call_for_node(node),
+                    ledger_registry=ledger_registry,
                 ),
             )
 

@@ -17,7 +17,7 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
   mapping and returns the winner plus the single largest gap, which briefs the
   next round. Stops on `won`, `max_rounds` (1–5), `budget` (a round is never
   launched without one builder call plus one critic call left), `deadline`,
-  `builder_failed` (keeps the best artifact so far), or `repeated_gap` (the
+  `builder_failed`/`critic_failed` (keep the latest artifact), or `repeated_gap` (the
   same gap three times; the second occurrence tells the builder to measure
   before complying). The validator requires `reference_key` in the node's
   `inputs`; spend rolls up via `__spend__` like `spawn_subgraph`. Assembly wires
@@ -28,6 +28,17 @@ Governance and contract fixes from a code review: the budget, resume, and
 error-reporting behaviors the docs promise are now actually enforced.
 
 ### Fixed
+- A failed node now halts the run: later nodes (incl. `branch`, `parallel_map`,
+  `wait_for_event`) no-op instead of spending LLM calls or pausing after a failure.
+- `max_llm_calls` gate in the node wrapper charges the shared per-run ledger, so
+  same-superstep siblings and `spawn_subgraph` reservations can't jointly overshoot.
+- `FileArtifactSink` rejects traversal/unsafe `run_id`s and sanitizes names
+  (leading dots, Windows device names, length).
+- `spawn_subgraph`/`gauntlet` `name` limited to the safe run-id charset (max 64);
+  child `inputs_from` values are seeded into the child's `values` and not echoed back.
+- `gauntlet` returns the latest artifact (not a "best") and stops with
+  `builder_failed`/`critic_failed` instead of discarding it when a builder or
+  critic raises after a round has produced one.
 - **Runtime LLM-call budget enforcement.** `max_llm_calls` is now a hard
   ceiling on actual spend, not just plan shape: the node wrapper refuses to
   start an LLM-consuming node once the cumulative count reaches the granted
