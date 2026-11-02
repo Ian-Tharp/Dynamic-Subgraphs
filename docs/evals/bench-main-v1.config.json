@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "bench_id": "main-v1",
+  "pinned_on": "2026-11-02",
+  "rule": "docs/evals/bench-dynamic-vs-fixed-2026-06.md §4 (frozen 2026-06-11)",
+  "pack": "docs/evals/bench-tasks-main-v1.jsonl",
+  "router_library": "docs/evals/router-library-v1",
+  "single_fixed": "docs/evals/fixed-host-graph-v1.json",
+  "worker_model": {
+    "provider": "openai",
+    "model": "gpt-5.4-nano-2026-03-17",
+    "alias": "gpt-5.4-nano",
+    "note": "One pinned worker for every arm (pilot continuity). Dated snapshot so the alias cannot drift mid-run."
+  },
+  "arms": [
+    {
+      "name": "invented-a1",
+      "origin": "invented",
+      "planner_model": {
+        "provider": "openai",
+        "model": "gpt-5.4-nano-2026-03-17",
+        "alias": "gpt-5.4-nano"
+      },
+      "note": "A1: nano planner + nano workers ('as deployed cheaply'; pilot continuity)."
+    },
+    {
+      "name": "invented-a2",
+      "origin": "invented",
+      "planner_model": {
+        "provider": "openai",
+        "model": "gpt-5.4-mini-2026-03-17",
+        "alias": "gpt-5.4-mini"
+      },
+      "note": "A2 (headline steelman): stronger planner + nano workers, the SDK's documented recipe (README 'Use a capable model for the planner'; docs/recipes.md §3). gpt-5.4-mini is the next tier up in the worker's own family: same provider and API key (no provider confound), and LiteLLM-priced so planner cost is booked. Full gpt-5.4 is the stronger alternative (~3.3x mini's price)."
+    },
+    {
+      "name": "routed",
+      "origin": "routed",
+      "note": "B (PRIMARY baseline): router-library-v1, unchanged."
+    },
+    {
+      "name": "authored",
+      "origin": "authored",
+      "note": "C (sanity floor): fixed-host-graph-v1, unchanged."
+    }
+  ],
+  "repeats_cap": 20,
+  "repeats_by_task_type": {
+    "compare": 20,
+    "research": 20,
+    "summarize": 3,
+    "extract": 6,
+    "plan": 3,
+    "synthesize": 20
+  },
+  "repeats_derivation": {
+    "compare": "pilot-compare-1 derived 25 -> capped at 20",
+    "research": "max(pilot-research-1 35, pilot-research-2 7) -> capped at 20",
+    "summarize": "pilot-summarize-1 derived 3",
+    "extract": "pilot-extract-1 derived 6",
+    "plan": "pilot-plan-1 derived 3",
+    "synthesize": "new type, no pilot CV -> cap (20). This is the upper bound the rule allows, so a 5-repeat re-derivation pilot can only lower it."
+  },
+  "cost_estimate": {
+    "basis": "Pilot per-run means (§3: invented $0.0028, routed $0.0011, authored $0.0009). A2 is scaled by gpt-5.4-mini/nano list price (~3.7x) on the planner share, plus 2x worker cost for larger plans. The authored arm on material tasks fails fast at Tavily, so its line is an upper bound.",
+    "usd_per_run": {
+      "invented-a1": 0.0028,
+      "invented-a2": 0.009,
+      "routed": 0.0011,
+      "authored": 0.0009
+    },
+    "safety_margin": 1.5,
+    "seconds_per_run": 7.6
+  }
+}
