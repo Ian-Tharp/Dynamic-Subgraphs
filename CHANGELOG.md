@@ -7,6 +7,14 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-11-03
+
+### Changed
+- **BREAKING:** `DynamicSubgraphs.run()` now returns a failed `RunResult` with
+  `status == "engine_failed"` when provider or model construction fails instead
+  of raising the construction exception. Callers that caught those exceptions
+  should inspect the result's status and errors instead.
+
 ### Added
 - **`gauntlet` node kind.** A builder/critic loop against a concrete reference,
   run inside one node so the outer graph stays a DAG (`app/runtime/gauntlet.py`).
