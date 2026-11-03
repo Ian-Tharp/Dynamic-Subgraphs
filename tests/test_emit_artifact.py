@@ -272,3 +272,132 @@ def test_end_to_end_emit_artifact_with_file_sink_writes_to_disk(
     assert file_path.parent == tmp_path / "emit-file" / "artifacts"
     assert file_path.name == "writeup.md"
     assert file_path.read_text(encoding="utf-8") == "the final write-up content"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["p__sg_x/../../ESC", r"p__sg_x\..\..\ESC", "..", "a/b", "/abs", "C:evil"],
+)
+def test_file_sink_rejects_traversal_run_id(tmp_path: Path, bad: str) -> None:
+    root = tmp_path / "root"
+    sink = FileArtifactSink(root_dir=root)
+
+    with pytest.raises(ValueError, match="run_id"):
+        sink.emit(name="a", artifact_type="report", content="x", run_id=bad)
+
+    assert not (tmp_path / "ESC").exists()
+    assert [p for p in tmp_path.rglob("*.md")] == []
+
+
+def test_file_sink_accepts_nested_child_run_id(tmp_path: Path) -> None:
+    sink = FileArtifactSink(root_dir=tmp_path)
+
+    ref = sink.emit(
+        name="a", artifact_type="report", content="x", run_id="parent__sg_name.v1"
+    )
+
+    assert Path(ref["path"]).parent == tmp_path / "parent__sg_name.v1" / "artifacts"
+
+
+@pytest.mark.parametrize(
+    ("name", "stem"),
+    [
+        ("..", "artifact-"),
+        (".hidden", "hidden-"),
+        ("CON", "_CON-"),
+        ("nul.x", "_nul.x-"),
+    ],
+)
+def test_file_sink_name_edge_cases_stay_safe(
+    tmp_path: Path, name: str, stem: str
+) -> None:
+    sink = FileArtifactSink(root_dir=tmp_path)
+
+    ref = sink.emit(name=name, artifact_type="report", content="x", run_id="r")
+
+    path = Path(ref["path"])
+    assert path.name.startswith(stem) and path.suffix == ".md"
+    assert path.parent == tmp_path / "r" / "artifacts"
+    assert path.exists()
+
+
+@pytest.mark.parametrize(
+    "pair",
+    [
+        (".env", "env"),
+        ("n" * 150 + "a", "n" * 150 + "b"),
+        ("a b", "a_b"),
+        ("a/b", "a?b"),
+    ],
+)
+def test_file_sink_lossy_names_do_not_collide(
+    tmp_path: Path, pair: tuple[str, str]
+) -> None:
+    sink = FileArtifactSink(root_dir=tmp_path)
+
+    paths = {
+        sink.emit(name=n, artifact_type="report", content=n, run_id="r")["path"]
+        for n in pair
+    }
+
+    assert len(paths) == 2
+
+
+@pytest.mark.parametrize("bad", ["CON", "nul", "aux.v1", "COM1", "run."])
+def test_file_sink_rejects_windows_reserved_or_trailing_dot_run_id(
+    tmp_path: Path, bad: str
+) -> None:
+    sink = FileArtifactSink(root_dir=tmp_path)
+
+    with pytest.raises(ValueError, match="run_id"):
+        sink.emit(name="a", artifact_type="report", content="x", run_id=bad)
+
+
+def test_file_sink_truncates_very_long_names(tmp_path: Path) -> None:
+    sink = FileArtifactSink(root_dir=tmp_path)
+
+    ref = sink.emit(name="n" * 500, artifact_type="report", content="x", run_id="r")
+
+    assert Path(ref["path"]).exists()
+
+
+def test_traversal_run_id_surfaces_as_node_error_not_crash(tmp_path: Path) -> None:
+    spec = GraphSpec(
+        graph_id="emit-trav",
+        goal="traversal run_id must fail the node, not escape the root",
+        nodes=[
+            NodeSpec(
+                id="draft",
+                kind=NodeKind.LLM_CALL,
+                outputs=["body"],
+                params={"instruction": "content"},
+            ),
+            NodeSpec(
+                id="publish",
+                kind=NodeKind.EMIT_ARTIFACT,
+                inputs=["body"],
+                outputs=["ref"],
+                params={"artifact_type": "report", "name": "w", "content_key": "body"},
+            ),
+        ],
+        edges=[
+            EdgeSpec.model_validate({"from": "START", "to": "draft"}),
+            EdgeSpec.model_validate({"from": "draft", "to": "publish"}),
+            EdgeSpec.model_validate({"from": "publish", "to": "END"}),
+        ],
+    )
+    root = tmp_path / "root"
+    executor = LangGraphExecutor(
+        runners={
+            NodeKind.EMIT_ARTIFACT: make_emit_artifact_runner(
+                FileArtifactSink(root_dir=root)
+            ),
+        }
+    )
+
+    result = executor.execute(
+        executor.compile(validate_graph_spec(spec)), run_id="p__sg_x/../../ESC"
+    )
+
+    assert result.ok is False
+    assert not (tmp_path / "ESC").exists()

@@ -13,7 +13,9 @@ from typing import Literal, get_args
 from app.models import NodeKind
 from dynamic_subgraphs.recording import Artifact
 
-# Run outcome — mirrors app/supervisor/state.py (single-run statuses).
+# Run outcome — mirrors app/supervisor/state.py (single-run statuses), plus
+# "engine_failed": the run never reached the supervisor (e.g. a provider SDK
+# raised while building the models — missing credentials, unknown provider).
 RunStatus = Literal[
     "pending",
     "ok",
@@ -25,6 +27,7 @@ RunStatus = Literal[
     "record_failed",
     "resume_failed",
     "replay_failed",
+    "engine_failed",
     "unknown",
 ]
 RUN_STATUSES: tuple[str, ...] = get_args(RunStatus)

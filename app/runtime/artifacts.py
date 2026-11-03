@@ -20,12 +20,14 @@ free to attach any additional fields (e.g., `path` for filesystem,
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, ClassVar, Protocol
 
 from app.models import DynamicRunState
+from app.run_id import WINDOWS_RESERVED, validate_run_id
 
 
 class ArtifactSink(Protocol):
@@ -108,7 +110,11 @@ class FileArtifactSink:
         run_id: str | None = None,
     ) -> dict[str, Any]:
         scope = run_id or "_unscoped"
+        validate_run_id(scope)
         target_dir = self._root / scope / "artifacts"
+        # Backstop: the resolved destination must stay under the root.
+        if not target_dir.resolve().is_relative_to(self._root.resolve()):
+            raise ValueError(f"run_id {run_id!r} resolves outside the artifacts root")
         target_dir.mkdir(parents=True, exist_ok=True)
 
         safe_name = _sanitize_filename(name)
@@ -171,6 +177,18 @@ def make_emit_artifact_runner(
 
 
 def _sanitize_filename(name: str) -> str:
-    """Coerce an artifact name to a filesystem-safe basename."""
+    """Coerce an artifact name to a filesystem-safe basename.
+
+    Any lossy step (replaced characters, stripped leading dots, truncation, reserved
+    device names) appends a short hash of the original name so distinct names can't
+    collide on one file (`a b` vs `a_b`).
+    """
     safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in name)
-    return safe or "artifact"
+    stripped = safe.lstrip(".")
+    lossy = safe != name or stripped != safe or len(stripped) > 100 or not stripped
+    safe = stripped[:100] or "artifact"
+    if safe.split(".")[0].upper() in WINDOWS_RESERVED:
+        safe, lossy = f"_{safe}", True
+    if lossy:
+        safe += "-" + hashlib.sha256(name.encode()).hexdigest()[:8]
+    return safe

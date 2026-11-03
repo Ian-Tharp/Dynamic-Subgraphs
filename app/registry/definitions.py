@@ -22,6 +22,7 @@ def default_kind_definitions() -> dict[NodeKind, NodeKindDefinition]:
     from app.registry.params import (
         BranchParams,
         EmitArtifactParams,
+        GauntletParams,
         LlmCallParams,
         ParallelMapParams,
         ReduceParams,
@@ -86,6 +87,17 @@ def default_kind_definitions() -> dict[NodeKind, NodeKindDefinition]:
             param_model=SpawnSubgraphParams,
             # Conservative floor: a spawned child runs at least one model call.
             # Precise child-spend roll-up arrives with budget clamping (slice 4).
+            counts_as_llm_call=True,
+        ),
+        NodeKind.GAUNTLET: NodeKindDefinition(
+            kind=NodeKind.GAUNTLET,
+            description=(
+                "Loop a builder child graph against a reference until a blind "
+                "critic picks ours."
+            ),
+            param_model=GauntletParams,
+            # Static floor for the planner: at least one builder call + one critic
+            # call. Actual spend rolls up at runtime via `__spend__`.
             counts_as_llm_call=True,
         ),
     }

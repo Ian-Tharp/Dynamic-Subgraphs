@@ -179,6 +179,7 @@ def validate_graph_spec(
     issues.extend(_validate_inputs(normalized_nodes, spec.edges))
     issues.extend(_detect_cycles(spec, {n.id for n in normalized_nodes}))
     issues.extend(_validate_branches(normalized_nodes, spec.edges))
+    issues.extend(_validate_gauntlets(normalized_nodes))
 
     if issues:
         raise RegistryValidationError(issues)
@@ -460,6 +461,29 @@ def _validate_branches(
                 )
             )
 
+    return issues
+
+
+def _validate_gauntlets(nodes: list[NodeSpec]) -> list[RegistryValidationIssue]:
+    """`gauntlet.reference_key` must be declared in `inputs` so input-provenance
+    guarantees an upstream node actually produces the reference."""
+    issues: list[RegistryValidationIssue] = []
+    for node in nodes:
+        if node.kind != NodeKind.GAUNTLET:
+            continue
+        reference_key = node.params.get("reference_key", "")
+        if reference_key and reference_key not in node.inputs:
+            issues.append(
+                RegistryValidationIssue(
+                    code="missing_reference_key_in_inputs",
+                    message=(
+                        f"gauntlet '{node.id}' has reference_key '{reference_key}' "
+                        f"but does not declare it in inputs"
+                    ),
+                    node_id=node.id,
+                    field="inputs",
+                )
+            )
     return issues
 
 

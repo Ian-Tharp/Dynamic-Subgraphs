@@ -26,6 +26,7 @@
 | `SearchProvider` Protocol + `TavilySearchProvider` + env-aware factory — production search adapter with DDG+Bing fallback | ✓ |
 | Judge truncation fix — `LlmIterationDecider` now sees up to 4000 chars per value (was 500), unblocks real-LLM evaluation | ✓ |
 | Chain-level recording (`FileRecorder.record_chain`, `load_chain`, `Supervisor.run_iteratively(record_chain=True)`) | ✓ |
+| `gauntlet` node kind — Shumer builder/critic loop inside one node: sealed blind A/B, one-gap briefs, stop on won / rounds / budget / deadline / repeated gap | ✓ |
 
 ## Identified improvements (alignment with original intent)
 

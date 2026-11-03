@@ -55,6 +55,8 @@ recoverable.
 | `wait_for_event` | ✓ | compiler-handled (`interrupt()` + checkpointer + resume) |
 | `spawn_subagent` | ✓ | runner-handled; echo default, OpenAI-backed factory |
 | `emit_artifact` | ✓ | runner-handled; echo default, `FileArtifactSink` wired in `main.py` |
+| `spawn_subgraph` | ✓ | runner-handled; `ChildLauncher` plans + runs a depth/budget-capped child |
+| `gauntlet` | ✓ | runner-handled; builder child via `ChildLauncher` + blind `Critic`, loop inside the node (`app/runtime/gauntlet.py`) |
 
 **All 8 registry kinds executable.** The runtime is functionally complete for phase 1.
 

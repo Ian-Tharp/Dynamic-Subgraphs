@@ -38,6 +38,7 @@ from typing import Any
 from langgraph.types import interrupt
 
 from app.models import DynamicRunState, NodeSpec, TraceEvent, TraceEventKind
+from app.runtime.wrappers import run_halted
 
 
 def make_wait_for_event_node(
@@ -50,6 +51,8 @@ def make_wait_for_event_node(
     output_key = node.outputs[0] if node.outputs else f"{node.id}_event"
 
     def wait_fn(state: DynamicRunState) -> dict[str, Any]:
+        if run_halted(state):
+            return {}  # failed run: never pause on a later wait node
         # On first pass: interrupt() raises GraphInterrupt; LangGraph captures
         # it, persists state via the checkpointer, and returns to the caller.
         # On resume: interrupt() returns the value passed via Command(resume=...).

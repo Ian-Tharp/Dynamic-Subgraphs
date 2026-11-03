@@ -11,11 +11,16 @@ def make_initial_state(
     inputs: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> DynamicRunState:
-    """Create the full runtime envelope expected by compiled transient graphs."""
+    """Create the full runtime envelope expected by compiled transient graphs.
+
+    `inputs` (e.g. a spawn_subgraph/gauntlet child's `inputs_from` slice) are
+    also seeded into `values` — the channel every runner actually reads — so a
+    child sees exactly the parent keys it was handed and nothing else.
+    """
 
     return {
         "inputs": dict(inputs or {}),
-        "values": {},
+        "values": dict(inputs or {}),
         "artifacts": {},
         "errors": [],
         "events": [],

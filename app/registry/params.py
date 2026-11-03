@@ -6,6 +6,14 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.models.node_kinds import NodeKind
 
+# Planner-chosen child names are embedded in the child run_id
+# (`<parent>__sg_<name>`), which becomes a directory name, ledger key and
+# checkpointer thread_id — keep them to the safe run-id charset.
+_SAFE_NAME_PATTERN = r"^[A-Za-z0-9_-]+$"
+_MAX_NAME_LENGTH = (
+    32  # nested run_ids grow ~name+6 per level; keep Windows paths < MAX_PATH
+)
+
 
 class LlmCallParams(BaseModel):
     instruction: str = Field(min_length=1)
@@ -71,7 +79,27 @@ class SpawnSubgraphParams(BaseModel):
     """
 
     sub_goal: str = Field(min_length=1)
-    name: str = Field(min_length=1)
+    name: str = Field(pattern=_SAFE_NAME_PATTERN, max_length=_MAX_NAME_LENGTH)
+    inputs_from: list[str] = Field(default_factory=list)
+
+
+class GauntletParams(BaseModel):
+    """Run a bounded builder/critic loop against a cached reference.
+
+    `sub_goal` briefs the builder child graph (planned at runtime, one level
+    deeper, like `spawn_subgraph`). `reference_key` names the parent state
+    value holding the reference artifact to beat — it must be in the node's
+    `inputs` so provenance is validated. Each round a fresh-context critic
+    compares the builder's artifact with the reference blind and returns the
+    winner plus one gap; the gap briefs the next round. `artifact_key` is the
+    child value treated as the artifact (falls back to all child values).
+    """
+
+    sub_goal: str = Field(min_length=1)
+    name: str = Field(pattern=_SAFE_NAME_PATTERN, max_length=_MAX_NAME_LENGTH)
+    reference_key: str = Field(min_length=1)
+    artifact_key: str = Field(default="artifact", min_length=1)
+    max_rounds: int = Field(default=3, ge=1, le=5)
     inputs_from: list[str] = Field(default_factory=list)
 
 
@@ -85,4 +113,5 @@ PARAM_MODEL_BY_KIND: dict[NodeKind, type[BaseModel]] = {
     NodeKind.WAIT_FOR_EVENT: WaitForEventParams,
     NodeKind.EMIT_ARTIFACT: EmitArtifactParams,
     NodeKind.SPAWN_SUBGRAPH: SpawnSubgraphParams,
+    NodeKind.GAUNTLET: GauntletParams,
 }

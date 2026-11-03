@@ -100,6 +100,11 @@ def create_run(
     finished = job.wait(timeout=timeout)
     if finished and job.result is not None:
         return JSONResponse(status_code=200, content=run_result_payload(job.result))
+    if finished:
+        # The worker crashed before producing a result. Per the API contract,
+        # run-level failures return 200 with a failed status in the body — the
+        # crash message must be reachable, not a 202 whose links all 404.
+        return JSONResponse(status_code=200, content=_crashed_payload(job))
     return JSONResponse(status_code=202, content=_ack(job))
 
 
@@ -108,6 +113,20 @@ def _ack(job: Job) -> dict[str, Any]:
         "run_id": job.run_id,
         "status": job.state.value,
         "state": job.state.value,
+        "links": run_links(job.run_id),
+    }
+
+
+def _crashed_payload(job: Job) -> dict[str, Any]:
+    """Status body for a job whose worker raised before producing a result."""
+    return {
+        "run_id": job.run_id,
+        "state": "failed",
+        "status": "failed",
+        "response": None,
+        "error": job.error,
+        "budget_wall_seconds": job.budget_wall_seconds,
+        "on_disk": False,
         "links": run_links(job.run_id),
     }
 
@@ -126,6 +145,11 @@ def get_run(request: Request, run_id: str) -> dict[str, Any]:
     job = ctx.jobs.get(run_id)
     if job is not None and job.result is not None:
         return run_status_payload(job.result)
+    if job is not None and job.is_terminal():
+        # Terminal without a result: the worker crashed. Report the failure
+        # (with its message) instead of falling through to a 404 that makes the
+        # error text unreachable.
+        return _crashed_payload(job)
     if job is not None and not job.is_terminal():
         return {
             "run_id": run_id,
@@ -242,6 +266,16 @@ def resume_run(
     )
     supervisor = ctx.supervisor_for(config)
     result = supervisor.resume(run_id, event=body.event)
+    # Keep the job store's view current: the original job completed with a
+    # terminal PAUSED result, and without this update GET /runs/{id} would keep
+    # reporting "paused" forever after a successful resume — driving pollers to
+    # re-post the event.
+    job = ctx.jobs.get(run_id)
+    if job is not None and result.status in {"ok", "paused"}:
+        job.complete(
+            result=result,
+            state=JobState.OK if result.status == "ok" else JobState.PAUSED,
+        )
     status_code = 200 if result.status in {"ok", "paused"} else 409
     return JSONResponse(status_code=status_code, content=run_result_payload(result))
 
@@ -257,6 +291,11 @@ def replay_run(
     require_valid_run_id(run_id)
     if not ctx.recorder.exists(run_id):
         raise NotFound(f"No run {run_id!r} to replay")
+    if body.new_run_id is not None:
+        # A replay must never clobber an existing run's recording — that would
+        # let one endpoint destroy another run's audit trail.
+        require_valid_run_id(body.new_run_id)
+        _ensure_unique(ctx, body.new_run_id)
     persisted = load_run_config(ctx.recorder.run_dir(run_id))
     config = resolve_run_config(
         ctx,

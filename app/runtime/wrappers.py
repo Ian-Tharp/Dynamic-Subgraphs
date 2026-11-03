@@ -17,8 +17,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
-from time import perf_counter
-from typing import Any
+from time import monotonic, perf_counter
+from typing import TYPE_CHECKING, Any
 
 from langgraph.errors import GraphBubbleUp
 from langgraph.graph import END
@@ -33,21 +33,59 @@ from app.models import (
 from app.models.run_state import add_counters
 from app.runtime.runners import NodeRunner
 
+if TYPE_CHECKING:
+    from app.runtime.budget_ledger import BudgetLedger
+
+
+def run_halted(state: Mapping[str, Any]) -> bool:
+    """True once any node has recorded an error — the run is failing.
+
+    A failing node returns ``Command(goto=END)``, but LangGraph still fires that
+    node's *static* downstream edges, so without this check later nodes would run
+    (and spend LLM calls, hit tools, pause on ``wait_for_event``) after the run
+    already failed. Every node entry point calls this first and no-ops, so a
+    failure halts the run at the next superstep instead of draining the plan.
+    Nodes scheduled in the *same* superstep as the failing one still complete —
+    that is concurrency, not a leak.
+    """
+    return bool(state.get("errors"))
+
+
+_MAX_RESERVATION_WAIT_SECONDS = 600.0
+
+
+def reservation_wait(state: Mapping[str, Any]) -> float:
+    """How long a plain LLM node may wait for a sibling spawn/gauntlet to refund."""
+    deadline = (state.get("metadata", {}) or {}).get("wall_deadline_monotonic")
+    if deadline is None:
+        return _MAX_RESERVATION_WAIT_SECONDS
+    return max(0.0, min(float(deadline) - monotonic(), _MAX_RESERVATION_WAIT_SECONDS))
+
 
 def make_node_wrapper(
     node: NodeSpec,
     runner: NodeRunner,
     *,
     counts_as_llm_call: bool = False,
+    ledger_registry: Mapping[str, BudgetLedger] | None = None,
 ) -> Callable[[DynamicRunState], DynamicRunState | Command]:
     """Build the LangGraph-callable wrapper for one NodeSpec + runner pair.
 
     `counts_as_llm_call` is the registry's per-node notion of whether running
     this node spends an LLM call (see `Registry.counts_as_llm_call_for_node`).
     It feeds the additive spend ledger in `state["counters"]`.
+
+    `ledger_registry` (run_id -> BudgetLedger, the executor's live map) makes the
+    runtime LLM-budget gate atomic: sibling nodes in one superstep all read the
+    same pre-merge `counters` snapshot, so a snapshot-only check lets them (and a
+    concurrent `spawn_subgraph` reservation) jointly overshoot `max_llm_calls`.
+    Charging the shared per-run ledger closes that TOCTOU. Absent a ledger (a
+    bare-wrapper unit test) the snapshot check still applies.
     """
 
     def _run(state: DynamicRunState) -> DynamicRunState | Command:
+        if run_halted(state):
+            return {}  # type: ignore[typeddict-item]
         started_at = datetime.now(UTC)
         started_perf = perf_counter()
         started = TraceEvent(
@@ -55,6 +93,64 @@ def make_node_wrapper(
             timestamp=started_at,
             node_id=node.id,
         )
+
+        # Runtime spend gate: the static validator caps the *plan*, but child
+        # roll-ups and fan-outs land in `counters` mid-run, so the cumulative
+        # spend can reach the granted ceiling with plan nodes still pending.
+        # Refuse to start an LLM-consuming node once the budget is exhausted —
+        # fail-closed, before the call fires — so `max_llm_calls` bounds actual
+        # spend, not just plan shape. The budget rides in metadata (seeded by
+        # the executor); absent it (a bare-runner unit test) the gate is
+        # skipped, mirroring the parallel_map dispatcher's fallback.
+        if counts_as_llm_call:
+            budget_raw = (state.get("metadata", {}) or {}).get("budget_max_llm_calls")
+            if budget_raw is not None:
+                consumed = int(
+                    (state.get("counters", {}) or {}).get("llm_calls_consumed", 0)
+                )
+                run_id = str((state.get("metadata", {}) or {}).get("run_id", ""))
+                ledger = (
+                    ledger_registry.get(run_id) if ledger_registry is not None else None
+                )
+                if ledger is not None:
+                    # Atomic against same-superstep siblings and spawn reservations.
+                    over = not ledger.try_charge(
+                        key="llm_calls",
+                        amount=1,
+                        budget=int(budget_raw),
+                        consumed=consumed,
+                        wait_seconds=reservation_wait(state),
+                    )
+                else:
+                    over = consumed + 1 > int(budget_raw)
+                if over:
+                    message = (
+                        f"node '{node.id}' would spend LLM call "
+                        f"{consumed + 1}, exceeding the host max_llm_calls "
+                        f"{int(budget_raw)}"
+                    )
+                    halted = TraceEvent(
+                        kind=TraceEventKind.NODE_ERROR,
+                        node_id=node.id,
+                        message=message,
+                        data={"duration_ms": 0.0},
+                    )
+                    return Command(
+                        update={
+                            "errors": [
+                                {
+                                    "node_id": node.id,
+                                    "message": message,
+                                    "type": "LlmCallBudgetExceeded",
+                                }
+                            ],
+                            "events": [
+                                started.model_dump(mode="json"),
+                                halted.model_dump(mode="json"),
+                            ],
+                        },
+                        goto=END,
+                    )
 
         try:
             raw_outputs = runner(state, node.params)
@@ -85,7 +181,15 @@ def make_node_wrapper(
                         started.model_dump(mode="json"),
                         failed.model_dump(mode="json"),
                     ],
-                    "counters": node_counter_delta(counts_as_llm_call),
+                    "counters": add_counters(
+                        node_counter_delta(counts_as_llm_call),
+                        {
+                            "llm_calls_consumed": int(
+                                getattr(exc, "llm_calls_spent", 0)
+                            ),
+                            "nodes_executed": int(getattr(exc, "nodes_spent", 0)),
+                        },
+                    ),
                 },
                 goto=END,
             )

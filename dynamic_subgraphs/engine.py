@@ -577,18 +577,39 @@ class DynamicSubgraphs:
         # callback wouldn't reach).
         usage_handler = UsageMetadataCallbackHandler()
 
-        supervisor = build_supervisor(
-            config,
-            recorder=recorder,
-            checkpointer=self._checkpointer,
-            model_providers=self._providers,
-            artifact_sink=artifact_sink,
-            chat_callbacks=[usage_handler],
-            policy=self._policy,
-            max_plan_attempts=self._max_plan_attempts,
-            planner_guidance=self._planner_guidance,
-        )
-        result = supervisor.run(prompt, run_id=run_id)
+        # The documented contract is "failures don't raise": chat models are
+        # built eagerly inside build_supervisor, so a missing credential or an
+        # unknown model raises *before* the supervisor's own exception-catching
+        # nodes exist. Contain anything from build/run here and return a failed
+        # RunResult instead of leaking a provider SDK exception to the caller.
+        try:
+            supervisor = build_supervisor(
+                config,
+                recorder=recorder,
+                checkpointer=self._checkpointer,
+                model_providers=self._providers,
+                artifact_sink=artifact_sink,
+                chat_callbacks=[usage_handler],
+                policy=self._policy,
+                max_plan_attempts=self._max_plan_attempts,
+                planner_guidance=self._planner_guidance,
+            )
+            result = supervisor.run(prompt, run_id=run_id)
+        except Exception as exc:
+            return RunResult(
+                run_id=run_id,
+                status="engine_failed",
+                response=(f"Run halted before execution: {type(exc).__name__}: {exc}"),
+                errors=[
+                    {
+                        "stage": "engine",
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                    }
+                ],
+                usage=TokenUsage.from_handler(usage_handler),
+                cost=None,
+            )
 
         usage = TokenUsage.from_handler(usage_handler)
         cost = _compute_cost(usage, self._pricing)

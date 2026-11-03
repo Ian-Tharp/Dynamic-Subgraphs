@@ -31,6 +31,7 @@ twice.
 from __future__ import annotations
 
 import threading
+import time
 
 
 class BudgetLedger:
@@ -43,6 +44,9 @@ class BudgetLedger:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        # Wakes plain-node chargers when a reservation is refunded.
+        self._cond = threading.Condition(self._lock)
+        self._open = 0  # reservations not yet refunded
         self._pending: dict[str, int] = {}
         self._baseline: dict[str, int] = {}
 
@@ -60,6 +64,7 @@ class BudgetLedger:
         shared pending tally that the next sibling reads.
         """
         with self._lock:
+            self._open += 1
             grants: dict[str, int | None] = {}
             for key, budget in budgets.items():
                 used = consumed.get(key, 0)
@@ -76,6 +81,48 @@ class BudgetLedger:
                 self._pending[key] = self._pending.get(key, 0) + available
             return grants
 
+    def try_charge(
+        self,
+        *,
+        key: str,
+        amount: int,
+        budget: int | None,
+        consumed: int,
+        wait_seconds: float = 0.0,
+    ) -> bool:
+        """Atomically reserve an exact `amount` of one resource; False = refused.
+
+        The fixed-amount sibling of `reserve()`: a `parallel_map` dispatcher
+        knows exactly how many calls its fan-out will spend, so instead of
+        claiming the whole remaining budget it charges `amount` against
+        ``budget - consumed - pending``. Refusal is fail-closed — nothing is
+        reserved and the caller must not dispatch. The charged amount is
+        absorbed by the same counters-baseline reconciliation as `reserve()`
+        once the workers' spend lands in `counters`.
+
+        A spawn/gauntlet reservation claims the whole remaining budget up front
+        and refunds the unused part when its child finishes. If the charge only
+        fails because of such an open reservation, wait (up to `wait_seconds`)
+        for the refund instead of failing — otherwise a plain sibling's fate would
+        depend on thread timing. Refusal is still immediate when the budget is
+        genuinely spent (`consumed + amount > budget`) or no reservation is open.
+        """
+        deadline = time.monotonic() + wait_seconds
+        with self._cond:
+            while True:
+                if consumed > self._baseline.get(key, 0):
+                    self._pending[key] = 0
+                    self._baseline[key] = consumed
+                if budget is None:
+                    return True
+                if consumed + self._pending.get(key, 0) + amount <= budget:
+                    self._pending[key] = self._pending.get(key, 0) + amount
+                    return True
+                remaining = deadline - time.monotonic()
+                if self._open == 0 or consumed + amount > budget or remaining <= 0:
+                    return False
+                self._cond.wait(remaining)
+
     def refund(
         self,
         *,
@@ -87,7 +134,9 @@ class BudgetLedger:
         safe to call (e.g. in a ``finally``); a child that never ran has
         ``spent == 0`` and refunds its whole reservation.
         """
-        with self._lock:
+        with self._cond:
+            self._open = max(0, self._open - 1)
+            self._cond.notify_all()
             for key, ceiling in reserved.items():
                 if ceiling is None:
                     continue

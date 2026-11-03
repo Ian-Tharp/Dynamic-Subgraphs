@@ -7,6 +7,115 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-11-03
+
+### Changed
+- **BREAKING:** `DynamicSubgraphs.run()` now returns a failed `RunResult` with
+  `status == "engine_failed"` when provider or model construction fails instead
+  of raising the construction exception. Callers that caught those exceptions
+  should inspect the result's status and errors instead.
+
+### Added
+- **`gauntlet` node kind.** A builder/critic loop against a concrete reference,
+  run inside one node so the outer graph stays a DAG (`app/runtime/gauntlet.py`).
+  Each round plans and runs a builder child through the same `ChildLauncher`
+  as `spawn_subgraph` (depth-capped, budget-clamped, recorded as
+  `<parent>__gl_<name>_r<round>`), then a fresh-context critic compares the
+  artifact with `state.values[reference_key]` under a sealed, replay-stable A/B
+  mapping and returns the winner plus the single largest gap, which briefs the
+  next round. Stops on `won`, `max_rounds` (1–5), `budget` (a round is never
+  launched without one builder call plus one critic call left), `deadline`,
+  `builder_failed`/`critic_failed` (keep the latest artifact), or `repeated_gap` (the
+  same gap three times; the second occurrence tells the builder to measure
+  before complying). The validator requires `reference_key` in the node's
+  `inputs`; spend rolls up via `__spend__` like `spawn_subgraph`. Assembly wires
+  the judge-role model as the critic on the LLM path and a token-free length
+  critic on the mock path.
+
+Governance and contract fixes from a code review: the budget, resume, and
+error-reporting behaviors the docs promise are now actually enforced.
+
+### Fixed
+- A failed node now halts the run: later nodes (incl. `branch`, `parallel_map`,
+  `wait_for_event`) no-op instead of spending LLM calls or pausing after a failure.
+- `max_llm_calls` gate in the node wrapper charges the shared per-run ledger, so
+  same-superstep siblings and `spawn_subgraph` reservations can't jointly overshoot.
+  A plain LLM node blocked only by a sibling's open reservation waits for its
+  refund (bounded by the wall deadline) rather than failing on thread timing; the
+  `parallel_map` fan-out charge waits the same way.
+- `FileArtifactSink` rejects traversal/unsafe `run_id`s and sanitizes names
+  (leading dots, Windows device names, length); any lossy rename (including replaced
+  characters like `a b` -> `a_b`) gets a hash suffix so distinct names can't
+  overwrite each other.
+- One shared `run_id` rule (`app/run_id.py`) now backs both the recorder and the
+  artifact sink: Windows-reserved names (`CON`, `NUL`, ...) and trailing-dot ids
+  are rejected by both, so a run that records can also emit artifacts.
+- `spawn_subgraph`/`gauntlet` `name` limited to the safe run-id charset (max 32);
+  child `inputs_from` values are seeded into the child's `values` and not echoed back.
+- `gauntlet` returns the latest artifact (not a "best") and stops with
+  `builder_failed`/`critic_failed` instead of discarding it when a builder or
+  critic raises after a round has produced one; a billed planner call from a
+  failed builder launch is now counted in the gauntlet's spend.
+- `spawn_subgraph` (and the node wrapper) keep real spend when a child fails or its
+  launcher raises after a billed planner call: the unspent part of the reservation
+  is refunded and the spend (LLM calls and nodes) rolls up to the parent's
+  `counters` instead of vanishing; `gauntlet` does the same when it ends with no
+  artifact.
+- **Runtime LLM-call budget enforcement.** `max_llm_calls` is now a hard
+  ceiling on actual spend, not just plan shape: the node wrapper refuses to
+  start an LLM-consuming node once the cumulative count reaches the granted
+  budget (`LlmCallBudgetExceeded`, fail-closed before the call fires), so a
+  nested child's rolled-up spend can no longer let the parent overspend the
+  root budget. Concurrent `parallel_map` dispatchers in one superstep now
+  charge the shared per-run `BudgetLedger` atomically (`try_charge`) instead
+  of checking a stale counters snapshot, closing the same-superstep TOCTOU.
+  The runtime planning call a `spawn_subgraph` makes with an LLM planner is
+  now charged against the parent's remaining allowance (reserved before
+  planning, reported in the child's counters) instead of being invisible to
+  the budget.
+- **Resume has a wall-clock deadline again.** `LangGraphExecutor.resume()`
+  mints a fresh deadline from the spec's `max_wall_seconds` (the checkpointed
+  monotonic deadline is stale after any real pause), enforces it with the same
+  hard timeout as `execute()`, refreshes it in the resumed state's metadata,
+  and re-registers a `BudgetLedger` so post-resume spawn siblings keep the
+  concurrent-reservation protection. A hung post-resume runner can no longer
+  block forever.
+- **A completed run can no longer be "resumed" again.** `Supervisor.resume`
+  verifies a pending pause via the executor's new `has_pending_interrupt`
+  probe; a run that completed (or whose checkpointed state is gone) returns
+  `resume_failed` — the API surfaces it as 409 — instead of re-applying the
+  event, re-executing the post-wait graph, and overwriting the recording.
+  `POST /runs/{id}/replay` now rejects a `new_run_id` that already exists
+  (409) instead of silently clobbering that run's audit trail, and a
+  successful resume updates the job store so `GET /runs/{id}` stops reporting
+  `paused` forever.
+- **Errors actually surface.** Node-level failures are copied onto
+  `SupervisorResult.errors` (stage `execute`, with `node_id`), so the SDK's
+  documented `result.errors` contract holds for execution failures; unexpected
+  executor exceptions are contained as `execution_failed` instead of
+  propagating. `DynamicSubgraphs.run()` no longer raises when provider/model
+  construction fails (missing credentials, unknown provider) — it returns a
+  failed `RunResult` with the new `engine_failed` status. The HTTP API
+  surfaces a crashed worker's error message on the sync response and
+  `GET /runs/{id}` / `GET /chains/{id}` (previously a 202 whose links all
+  404'd, with the message unreachable).
+- **Failed attempts are recorded too.** Runs that die at plan / validate /
+  compile now route through the record stage and persist a failure record
+  (`output.json` with `ok: false` + status + errors, `prompt.md`,
+  `summary.md`, and — for rejected plans — `rejected_spec.json`; never
+  `spec.json`, which only a validated spec may occupy), honoring the
+  recorder's "every attempt produces a directory" contract. A recording
+  failure no longer masks the run's own outcome: only an `ok` run downgrades
+  to `record_failed`; failed and paused runs keep their status with the record
+  error appended.
+
+### Added
+- `BudgetLedger.try_charge(...)` — atomic fixed-amount reservation.
+- `LangGraphExecutor.has_pending_interrupt(...)` — resumability probe.
+- `FileRecorder.record_failure(...)` / `NullRecorder.record_failure(...)` —
+  pre-execution failure records (selection-aware).
+- SDK `RunStatus` gains `"engine_failed"`.
+
 ## [0.5.0] — 2026-06-11
 
 This release completes the **eval/value layer** (Slice 7) and ships the **3-arm
