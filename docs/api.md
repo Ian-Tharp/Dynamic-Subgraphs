@@ -64,6 +64,11 @@ are missing returns `503`.
 | `GET` | `/registry` | node kinds, param JSON-schemas, tool/subagent allowlists, forbidden kinds |
 | `GET` | `/healthz` | liveness |
 
+Run-result payloads returned by the API (runs, replays, resumes) include a
+`receipt` field: the provenance receipt described in
+[`governance.md`](./governance.md). A run refused by the plan policy gate
+reports `status: "policy_denied"`.
+
 `POST /chains` defaults to `decider="status"`: token-free, stop on `ok`, ask
 on `paused`, fail closed otherwise. Set `decider="llm"` to use the structured
 iteration judge after each completed iteration; it can `stop`, `replan`,

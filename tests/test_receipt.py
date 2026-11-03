@@ -299,3 +299,24 @@ def test_policy_hash_is_the_host_policy_even_with_a_pricing_fallback(
         result.receipt, tmp_path / "fallback", policy=engine.config.policy
     )
     assert v.ok, v.problems
+
+
+def test_governance_public_surface() -> None:
+    import dynamic_subgraphs as ds
+    import dynamic_subgraphs.governance as gov
+
+    for name in (
+        "CostModel",
+        "ModelPrice",
+        "TokenCap",
+        "SubgraphCatalog",
+        "ProvenanceReceipt",
+        "PlanGateReport",
+        "PolicyViolation",
+        "check_plan_policy",
+        "verify_receipt",
+    ):
+        assert name in ds.__all__
+        assert getattr(ds, name) is getattr(gov, name)
+    assert "policy_denied" in ds.RUN_STATUSES
+    assert ds.Artifact.RECEIPT.value == "receipt.json"

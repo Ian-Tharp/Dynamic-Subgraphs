@@ -32,3 +32,13 @@ def test_run_status_payload_shape(tmp_path: Path) -> None:
     payload = run_status_payload(result)
     assert payload["run_id"] == "ser-002"
     assert payload["state"] in {"ok", "failed", "paused"}
+
+
+def test_run_result_payload_includes_the_receipt(tmp_path: Path) -> None:
+    from app.governance import ProvenanceReceipt, verify_receipt
+
+    payload = run_result_payload(_run(tmp_path, "ser-003"))
+
+    receipt = ProvenanceReceipt.model_validate(payload["receipt"])
+    assert receipt.run_id == "ser-003"
+    assert verify_receipt(receipt, tmp_path / "ser-003").ok
