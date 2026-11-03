@@ -3,7 +3,7 @@
 ## Dependency direction
 
 ```text
-api → supervisor → compiler, runtime, recording
+api, mcp → supervisor → compiler, runtime, recording
                  → registry + policy (validate against the host envelope)
 eval (public) → models, registry        (scores a completed run; off by default)
 models ← all layers (no upward imports)
@@ -25,6 +25,10 @@ models ← all layers (no upward imports)
   the plan against the registry and grades plan validity, grounding, goal completion,
   and cost into a comparable `EvalResult`.
 - **`api`**: HTTP surface; delegates to supervisor.
+- **`mcp`**: Model Context Protocol surface; delegates to supervisor. Governance at
+  this boundary (host-owned policy, caller may only narrow it, mock-only unless the
+  host enables the LLM planner, always-on recording, no id clobbering) lives in
+  `service.py`, which imports no MCP types; `server.py` is the only MCP SDK import.
 
 ## Alignment with CORE framing
 

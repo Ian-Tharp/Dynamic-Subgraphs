@@ -44,6 +44,8 @@ dependencies = [
 
 [project.optional-dependencies]
 api = ["fastapi>=0.136.3", "uvicorn[standard]>=0.48.0"]
+# MCP server (`python -m app.mcp`) exposing governed runs to MCP hosts.
+mcp = ["mcp>=2.3,<3"]
 openai = ["langchain-openai>=1.2.2"]
 anthropic = ["langchain-anthropic>=0.3.0"]
 ollama = ["langchain-ollama>=0.2.0"]
@@ -52,6 +54,7 @@ cost = ["litellm>=1.0"]
 all = [
     "fastapi>=0.136.3",
     "uvicorn[standard]>=0.48.0",
+    "mcp>=2.3,<3",
     "langchain-openai>=1.2.2",
     "langchain-anthropic>=0.3.0",
     "langchain-ollama>=0.2.0",
@@ -126,7 +129,13 @@ no_implicit_optional = true
 # the governance/data modules under strict typing. CI, pre-commit, and the local
 # `uv run mypy` all share this set, so strictness can't drift between config and
 # command line.
-files = ["dynamic_subgraphs", "app/policy.py", "app/models", "app/registry"]
+files = [
+    "dynamic_subgraphs",
+    "app/policy.py",
+    "app/models",
+    "app/registry",
+    "app/mcp",
+]
 
 [[tool.mypy.overrides]]
 module = "dynamic_subgraphs.*"

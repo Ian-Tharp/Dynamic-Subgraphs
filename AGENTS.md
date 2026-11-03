@@ -23,6 +23,7 @@ This repo implements a **governed dynamic graph runtime**: a stable supervisor o
 | `app/supervisor/` | Durable host graph: plan → validate → run → record |
 | `app/recording/` | Persist runs under `runs/<run_id>/` |
 | `app/api/` | FastAPI: thin HTTP surface over the supervisor (runs/chains/registry/health, SSE, resume/replay). See `docs/api.md`. |
+| `app/mcp/` | MCP server: governed runs as MCP tools/resources. `service.py` owns the rules (no MCP import); `server.py` is the adapter. See `docs/mcp.md`. |
 
 ## Rules
 
@@ -41,4 +42,5 @@ This repo implements a **governed dynamic graph runtime**: a stable supervisor o
 4. Supervisor graph  
 5. Planner (structured LLM output)  
 6. API `POST /runs` ✅ (full supervisor surface; see `docs/api.md`)  
-7. Eval / policy gates on side effects  
+7. Eval / policy gates on side effects
+8. MCP server (`python -m app.mcp`) ✅ (governed runs for MCP hosts; see `docs/mcp.md`)  

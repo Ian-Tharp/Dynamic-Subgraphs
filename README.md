@@ -16,7 +16,8 @@ What that buys you over a free-form agent loop: the model proposes the workflow 
 never executes arbitrary code; the compiler only instantiates registry-approved node
 kinds; recursion is depth- and budget-capped; and any run — success or failure — can be
 recorded for inspection and replay. LangGraph types stay behind the `compiler/` and
-`runtime/` boundaries. An optional thin FastAPI layer exposes the supervisor over HTTP.
+`runtime/` boundaries. Optional thin layers expose the supervisor over HTTP (FastAPI)
+and over the Model Context Protocol, so any MCP-capable agent can call governed runs.
 
 ## What can it build?
 
@@ -195,6 +196,7 @@ uv add "dynamic-subgraphs[openai]"       # + OpenAI provider
 uv add "dynamic-subgraphs[anthropic]"    # + Anthropic provider
 uv add "dynamic-subgraphs[ollama]"       # + local Ollama provider
 uv add "dynamic-subgraphs[api]"          # + FastAPI HTTP surface
+uv add "dynamic-subgraphs[mcp]"          # + MCP server for agent hosts
 uv add "dynamic-subgraphs[cost]"         # + automatic result.cost (LiteLLM prices)
 uv add "dynamic-subgraphs[all]"          # everything
 ```
@@ -203,7 +205,7 @@ Or with pip:
 
 ```bash
 pip install dynamic-subgraphs
-pip install "dynamic-subgraphs[openai]"  # same extras: anthropic, ollama, api, cost, all
+pip install "dynamic-subgraphs[openai]"  # same extras: anthropic, ollama, api, mcp, cost, all
 ```
 
 The core install is intentionally light (`langgraph`, `langchain-core`,
@@ -221,6 +223,9 @@ uv run python -m app.main "compare A and B"
 
 # Run the HTTP API (boots in mock mode by default; needs the `api` extra)
 uv run python -m app.api
+
+# Run the MCP server over stdio (mock mode by default; needs the `mcp` extra)
+uv run python -m app.mcp
 ```
 
 By default everything runs in **mock** mode — free and offline. Set
@@ -401,6 +406,7 @@ result = engine.run(
 - [`docs/api-stability.md`](./docs/api-stability.md) — API stability & change policy: what counts as public, SemVer, deprecation, and how we keep changes non-breaking.
 - [`docs/evals/`](./docs/evals/) — eval reports (e.g. the gpt-5.4-nano vs claude-haiku-4-5 e2e comparison: latency / tokens / cost / quality, traced via LangSmith).
 - [`docs/api.md`](./docs/api.md) — the HTTP surface over the supervisor (endpoints, modes, auth, examples).
+- [`docs/mcp.md`](./docs/mcp.md) — the MCP server: hand tasks from Claude, IDEs, or other agents to governed, recorded runs.
 - [`docs/dynamic-graphs-canonical-design-v1.md`](./docs/dynamic-graphs-canonical-design-v1.md) — canonical project design and source of truth.
 - [`docs/index.md`](./docs/index.md) — full documentation index.
 - [`AGENTS.md`](./AGENTS.md) — agent-facing package map and MVP sequence.

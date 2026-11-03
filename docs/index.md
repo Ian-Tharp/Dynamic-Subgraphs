@@ -9,6 +9,7 @@
 - [`recipes.md`](./recipes.md) — task-oriented recipes (policy, plan-repair, recording, per-role models) with tested-model and latency tables.
 - [`api-stability.md`](./api-stability.md) — the public-API definition and the project's change/deprecation policy.
 - [`api.md`](./api.md) — the optional HTTP surface over the supervisor.
+- [`mcp.md`](./mcp.md) — the optional MCP server: governed runs as tools for MCP hosts.
 
 ## Evaluation
 
