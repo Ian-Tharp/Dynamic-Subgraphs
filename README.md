@@ -22,7 +22,7 @@ recorded for inspection and replay. LangGraph types stay behind the `compiler/` 
 
 From one prompt, the planner assembles a **transient** graph out of a small set
 of governed node kinds — `llm_call`, `tool_call`, `branch`, `reduce`,
-`parallel_map`, `spawn_subagent`, `spawn_subgraph`, `wait_for_event`,
+`parallel_map`, `spawn_subagent`, `spawn_subgraph`, `gauntlet`, `wait_for_event`,
 `emit_artifact`. A few of the shapes it produces (these render in the same Mermaid
 the engine writes to `graph.mmd` for every run):
 
@@ -96,6 +96,30 @@ graph TD
     review --> finalize
     finalize --> END
 ```
+
+**Gauntlet loop** — build against a concrete reference, judged blind, until
+ours wins or a boundary fires (rounds, budget, a gap repeated three times):
+
+```mermaid
+graph TD
+    START([START])
+    END([END])
+    fetch["fetch_reference<br/>tool_call"]
+    loop["beat_reference<br/>gauntlet"]
+    report["report<br/>emit_artifact"]
+    START --> fetch
+    fetch --> loop
+    loop --> report
+    report --> END
+```
+
+The `gauntlet` node runs Matt Shumer's builder/critic loop inside one node:
+each round plans a builder child graph (depth- and budget-clamped like
+`spawn_subgraph`), then a fresh-context critic compares the artifact with the
+reference under a sealed A/B mapping and returns one gap that briefs the next
+round. The outer graph stays a DAG; the round log, verdicts, and stop reason
+land in the run's `output.json`. Losing to a strong reference is normal — the
+best artifact so far is still returned, never relabeled as a win.
 
 **Nested composition** — a node plans and runs a child graph on a fresh, isolated
 state envelope under enforced **depth and spend ceilings** (recursion that can't run

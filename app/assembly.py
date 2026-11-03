@@ -30,6 +30,11 @@ from app.runtime import (
     make_emit_artifact_runner,
     make_spawn_subagent_runner,
 )
+from app.runtime.gauntlet import (
+    build_gauntlet_runner,
+    build_provider_critic,
+    make_length_critic,
+)
 from app.runtime.model_providers import ProviderRegistry
 from app.runtime.subgraph import build_spawn_subgraph_runner, make_child_launcher
 from app.supervisor import (
@@ -268,20 +273,31 @@ def build_supervisor(
     # after the executor exists because the launcher closes over it — and because
     # `runners` is the executor's live dict, the executor picks the entry up, so
     # a child can itself spawn (bounded by the depth ceiling).
-    runners[NodeKind.SPAWN_SUBGRAPH] = build_spawn_subgraph_runner(
-        make_child_launcher(
-            planner=planner,
-            executor=executor,
-            recorder=recorder,
-            policy=effective_policy,
-            # An LLM planner's runtime planning call is a real model call and
-            # must be charged against the parent's LLM budget; mock/static
-            # planners (and fixed_spec runs) are token-free.
-            planner_counts_as_llm_call=(
-                config.planner == "llm" and config.fixed_spec is None
-            ),
+    launcher = make_child_launcher(
+        planner=planner,
+        executor=executor,
+        recorder=recorder,
+        policy=effective_policy,
+        # An LLM planner's runtime planning call is a real model call and
+        # must be charged against the parent's LLM budget; mock/static
+        # planners (and fixed_spec runs) are token-free.
+        planner_counts_as_llm_call=(
+            config.planner == "llm" and config.fixed_spec is None
         ),
-        ledger_registry=executor.ledgers,
+    )
+    runners[NodeKind.SPAWN_SUBGRAPH] = build_spawn_subgraph_runner(
+        launcher, ledger_registry=executor.ledgers
+    )
+    # The gauntlet's builder rounds reuse the same launcher; its blind critic
+    # is the judge-role model (a cheaper cross-family critic is the intended
+    # use), or a token-free length critic on the mock path.
+    if config.planner == "llm":
+        judge_ref = _attach_callbacks(config.judge_ref, chat_callbacks)
+        critic = build_provider_critic(providers.get(judge_ref.provider), judge_ref)
+    else:
+        critic = make_length_critic()
+    runners[NodeKind.GAUNTLET] = build_gauntlet_runner(
+        launcher, critic, ledger_registry=executor.ledgers
     )
     return Supervisor(
         planner=planner,

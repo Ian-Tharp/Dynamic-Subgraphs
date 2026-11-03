@@ -198,6 +198,24 @@ def run_spawn_subgraph(
     )
 
 
+def run_gauntlet(
+    state: DynamicRunState,
+    params: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Placeholder default for `gauntlet` — refuses to run.
+
+    Like `spawn_subgraph`, there is no token-free stand-in: the loop needs a
+    child launcher and a critic. Wire `build_gauntlet_runner(launcher, critic)`
+    via `runners={NodeKind.GAUNTLET: ...}` (the `assembly` module does this).
+    """
+
+    del state, params
+    raise RuntimeError(
+        "gauntlet has no default runner: wire build_gauntlet_runner"
+        "(launcher, critic) via runners={NodeKind.GAUNTLET: ...}."
+    )
+
+
 def default_runners() -> dict[NodeKind, NodeRunner]:
     """Echo / placeholder runners for every registry kind that has one.
 
@@ -215,4 +233,5 @@ def default_runners() -> dict[NodeKind, NodeRunner]:
         NodeKind.SPAWN_SUBAGENT: run_spawn_subagent,
         NodeKind.EMIT_ARTIFACT: run_emit_artifact,
         NodeKind.SPAWN_SUBGRAPH: run_spawn_subgraph,
+        NodeKind.GAUNTLET: run_gauntlet,
     }
