@@ -56,6 +56,17 @@ from dynamic_subgraphs.eval import (
     ScoreComponent,
     build_deterministic_eval_gate,
 )
+from dynamic_subgraphs.governance import (
+    CostModel,
+    ModelPrice,
+    PlanGateReport,
+    PolicyViolation,
+    ProvenanceReceipt,
+    SubgraphCatalog,
+    TokenCap,
+    check_plan_policy,
+    verify_receipt,
+)
 from dynamic_subgraphs.recording import Artifact, Recording
 from dynamic_subgraphs.types import (
     ARTIFACT_KINDS,
@@ -81,6 +92,7 @@ __all__ = [
     "BenchIntegrityError",
     "BenchReport",
     "BenchTask",
+    "CostModel",
     "DeterministicEvalGate",
     "DynamicSubgraphs",
     "EngineConfig",
@@ -92,10 +104,14 @@ __all__ = [
     "EvalTags",
     "ExecutionPolicy",
     "Model",
+    "ModelPrice",
     "ModelRef",
     "ModelSelection",
     "OriginComparison",
+    "PlanGateReport",
     "Planner",
+    "PolicyViolation",
+    "ProvenanceReceipt",
     "Recording",
     "RouterLibrary",
     "RunFingerprint",
@@ -103,8 +119,12 @@ __all__ = [
     "RunStatus",
     "ScoreComponent",
     "StructuredMethod",
+    "SubgraphCatalog",
+    "TokenCap",
     "TokenUsage",
     "build_deterministic_eval_gate",
+    "check_plan_policy",
     "fill_spec",
     "run_benchmark",
+    "verify_receipt",
 ]

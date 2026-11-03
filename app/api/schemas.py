@@ -65,6 +65,9 @@ class RunResult(BaseModel):
     record_dir: str | None = None
     artifacts: list[str] = Field(default_factory=list)
     links: dict[str, str] = Field(default_factory=dict)
+    # Provenance receipt (app.governance.ProvenanceReceipt as JSON); None for
+    # results that predate receipts.
+    receipt: dict[str, Any] | None = None
 
 
 class RunStatus(BaseModel):

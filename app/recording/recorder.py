@@ -15,6 +15,8 @@ Layout:
         summary.md    -- human-readable summary
         prompt.md     -- optional, only written if a prompt was provided
         eval.json     -- optional, only written when eval_gate is configured
+        receipt.json  -- provenance receipt (app.governance), written after
+                         the run is recorded; also for refused/failed runs
       <chain_id>/
         chain.json    -- emitted by record_chain() for iterative runs;
                          sits alongside <chain_id>_iter_N/ directories
@@ -58,6 +60,7 @@ class ChainRecord:
 
 
 CHAIN_SCHEMA_VERSION = 1
+RECEIPT_FILENAME = "receipt.json"
 
 
 class Recorder(Protocol):
@@ -229,6 +232,23 @@ def _write_eval_json(directory: Path, eval_result: Mapping[str, Any]) -> Path:
     return path
 
 
+class _ReceiptProducer:
+    """Placeholder so ``receipt.json`` is a known, selectable artifact.
+
+    The receipt needs the record's own run id and the final trace, so the
+    supervisor writes it *after* ``record()`` via ``FileRecorder.record_receipt``.
+    """
+
+    key = "receipt"
+    filename = RECEIPT_FILENAME
+
+    def applies(self, ctx: ArtifactContext) -> bool:
+        return False
+
+    def write(self, ctx: ArtifactContext) -> Path:  # pragma: no cover - never applies
+        raise NotImplementedError
+
+
 # Order is preserved in RunRecord.artifacts and matches the historical layout.
 DEFAULT_PRODUCERS: tuple[ArtifactProducer, ...] = (
     _SpecProducer(),
@@ -238,6 +258,7 @@ DEFAULT_PRODUCERS: tuple[ArtifactProducer, ...] = (
     _PromptProducer(),
     _SummaryProducer(),
     _EvalProducer(),
+    _ReceiptProducer(),
 )
 
 
@@ -523,6 +544,32 @@ class FileRecorder:
                 "Call record() before record_eval()."
             )
         return _write_eval_json(directory, eval_result)
+
+    def record_receipt(self, run_id: str, receipt: Mapping[str, Any]) -> Path | None:
+        """Write receipt.json into an existing run dir.
+
+        Returns None (writes nothing) when ``receipt.json`` isn't selected or
+        the run left no directory (e.g. its selection wrote nothing).
+        """
+        validate_run_id(run_id)
+        if self._selection is not None and RECEIPT_FILENAME not in self._selection:
+            return None
+        directory = self._contained(self._root / run_id, run_id)
+        if not directory.is_dir():
+            return None
+        path = directory / RECEIPT_FILENAME
+        path.write_text(
+            json.dumps(dict(receipt), indent=2, default=str), encoding="utf-8"
+        )
+        return path
+
+    def load_receipt(self, run_id: str) -> dict[str, Any] | None:
+        """Read receipt.json for run_id; None when none was written."""
+        validate_run_id(run_id)
+        path = self._root / run_id / RECEIPT_FILENAME
+        if not path.exists():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def load_eval(self, run_id: str) -> dict[str, Any] | None:
         """Read eval.json for run_id; None when the run was never scored.

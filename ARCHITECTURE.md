@@ -15,6 +15,11 @@ models ← all layers (no upward imports)
   intersection `min(host, planner request)` (and against each nested child's
   *remaining* allowance), so a planner can never grant itself more than the host
   allows. The effective envelope is stamped onto the validated spec.
+- **`governance`**: plan-level checks run after registry validation and before
+  compile: the policy gate (structure, capabilities, data flow, catalog, cost),
+  the pre-flight cost bound, the approved-subgraph catalog, and provenance
+  receipts. Pure functions over `models` + `policy` + `registry`; the supervisor
+  and runtime call into it, and it never imports them.
 - **`registry`**: node-kind definitions, param schemas, tool/subagent allowlists.
 - **`compiler`**: validates specs against registry + policy; builds transient LangGraph graphs.
 - **`runtime`**: executes compiled graphs; wraps nodes with stable ids, timing, errors.
@@ -35,7 +40,7 @@ This repo is the **dynamic subgraph engine** slice of a broader Agentic OS:
 | Orchestration | `supervisor/` |
 | Dynamic composition | `compiler/` + `registry/` |
 | Execution | `runtime/` |
-| Governance | `policy/` (host-owned `ExecutionPolicy`, enforced at validation + runtime) |
+| Governance | `policy/` (host-owned `ExecutionPolicy`, enforced at validation + runtime) + `governance/` (plan gate, cost bound, catalog, receipts) |
 | Ledger / provenance | `recording/` |
 | Evals / AEGIS | `dynamic_subgraphs/eval/` — deterministic *structural* scorer shipped (off by default); semantic gates on registry side effects remain future work |
 
@@ -43,7 +48,7 @@ ChatGPT’s “select predefined subgraph” MVP is **Phase 1** here: hardcoded 
 
 ## LangGraph usage
 
-- **Supervisor**: one static `StateGraph` (receive → plan → validate → compile_and_run → record → respond).
+- **Supervisor**: one static `StateGraph` (receive → plan → validate [registry + plan gate] → compile_and_run → record → respond).
 - **Transient graphs**: compiled per run from `GraphSpec`, discarded after completion unless paused for resume.
 
 ## State

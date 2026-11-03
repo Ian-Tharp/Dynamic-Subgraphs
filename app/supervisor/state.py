@@ -33,6 +33,9 @@ class RunStatus(StrEnum):
     PAUSED = "paused"
     PLAN_FAILED = "plan_failed"
     VALIDATION_FAILED = "validation_failed"
+    # The plan passed registry validation but the plan-level policy gate
+    # (app.governance) refused it — nothing was compiled or run.
+    POLICY_DENIED = "policy_denied"
     COMPILE_FAILED = "compile_failed"
     EXECUTION_FAILED = "execution_failed"
     RECORD_FAILED = "record_failed"
@@ -51,6 +54,7 @@ DEFER_STATUSES: frozenset[RunStatus] = frozenset(
         RunStatus.PAUSED,
         RunStatus.PLAN_FAILED,
         RunStatus.VALIDATION_FAILED,
+        RunStatus.POLICY_DENIED,
         RunStatus.COMPILE_FAILED,
         RunStatus.RECORD_FAILED,
         RunStatus.RESUME_FAILED,
@@ -68,6 +72,7 @@ class SupervisorState(TypedDict, total=False):
         - "paused"               graph hit a wait_for_event and is awaiting resume
         - "plan_failed"          planner raised
         - "validation_failed"    GraphSpec rejected by validator
+        - "policy_denied"        plan refused by the plan-level policy gate
         - "compile_failed"       compiler rejected (e.g. unsupported kind)
         - "execution_failed"     runner exception inside a node
         - "record_failed"        result exists but couldn't be persisted
@@ -93,3 +98,6 @@ class SupervisorState(TypedDict, total=False):
     plan_attempts: int
     last_validation_issues: list[dict[str, Any]] | None
     last_rejected_spec: GraphSpec | None
+    # The plan gate's report (app.governance.PlanGateReport) for the last
+    # checked plan; read when building the provenance receipt.
+    gate_report: Any

@@ -131,7 +131,8 @@ print(result.plan)                                # the generated GraphSpec
 
 `Recording.debug()` captures every artifact: `Artifact.SPEC`, `Artifact.TRACE`,
 `Artifact.OUTPUT`, `Artifact.MERMAID`, `Artifact.SUMMARY`, `Artifact.PROMPT`,
-`Artifact.EVAL`, and `Artifact.EMITTED`.
+`Artifact.EVAL`, `Artifact.RECEIPT` (`receipt.json`, the provenance receipt —
+see [`governance.md`](./governance.md)), and `Artifact.EMITTED`.
 
 ## 5. Everything except the spec
 
