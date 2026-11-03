@@ -276,3 +276,26 @@ def test_replay_returns_a_receipt_and_re_checks_the_gate(tmp_path: Path) -> None
     assert verify_receipt(replayed.receipt, tmp_path / "again").ok
     assert tight.status == "policy_denied"
     assert tight.receipt is not None and tight.receipt.status == "policy_denied"
+
+
+def test_policy_hash_is_the_host_policy_even_with_a_pricing_fallback(
+    tmp_path: Path,
+) -> None:
+    # The cost model comes from EngineConfig.pricing, not the policy; the
+    # receipt must still verify against the policy the host configured.
+    policy = ExecutionPolicy(max_tokens=1_000_000)
+    engine = _engine(
+        tmp_path,
+        policy,
+        pricing={"mock-model": {"input_per_1m": 1.0, "output_per_1m": 4.0}},
+    )
+
+    result = engine.run("x", run_id="fallback")
+
+    assert result.ok, result.errors
+    cost = next(d for d in result.receipt.gate_decisions if d.gate == "cost")
+    assert cost.details["cost_model_hash"].startswith("sha256:")
+    v = verify_receipt(
+        result.receipt, tmp_path / "fallback", policy=engine.config.policy
+    )
+    assert v.ok, v.problems

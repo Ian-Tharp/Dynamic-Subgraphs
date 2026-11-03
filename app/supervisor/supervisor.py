@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.governance import (
+    CostModel,
     PlanGateReport,
     ProvenanceReceipt,
     build_receipt,
@@ -86,6 +87,7 @@ class Supervisor:
         policy: ExecutionPolicy | None = None,
         max_plan_attempts: int = 1,
         run_models: Iterable[str] = (),
+        cost_model: CostModel | None = None,
     ) -> None:
         self._planner = planner
         self._executor = executor
@@ -96,6 +98,8 @@ class Supervisor:
         # worker, ...): checked against policy.allowed_models and listed on
         # every receipt.
         self._run_models = tuple(sorted(set(run_models)))
+        # Prices/caps/routing for the cost gate (overrides policy.cost_model).
+        self._cost_model = cost_model
         self._graph = build_supervisor_graph(
             planner=planner,
             executor=executor,
@@ -103,6 +107,7 @@ class Supervisor:
             policy=self._policy,
             max_plan_attempts=self._max_plan_attempts,
             run_models=self._run_models,
+            cost_model=cost_model,
         ).compile()
 
     @property
@@ -429,7 +434,12 @@ class Supervisor:
         # The plan gate applies to replays too: a recorded plan that the current
         # policy would refuse (tightened budget, new data-flow rule, catalog
         # mode) does not run again.
-        gate_report = check_plan_policy(spec, self._policy, run_models=self._run_models)
+        gate_report = check_plan_policy(
+            spec,
+            self._policy,
+            run_models=self._run_models,
+            cost_model=self._cost_model,
+        )
         if not gate_report.allowed:
             return SupervisorResult(
                 run_id=effective_new_run_id,

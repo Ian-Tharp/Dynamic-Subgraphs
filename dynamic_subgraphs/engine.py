@@ -167,16 +167,16 @@ class ModelSelection:
         )
 
 
-def _policy_with_pricing(
+def _pricing_cost_model(
     policy: ExecutionPolicy, pricing: Pricing | None
-) -> ExecutionPolicy:
-    """Use `EngineConfig.pricing` as the cost model's price table when the
-    policy sets a cost/token ceiling but no `cost_model` of its own."""
+) -> CostModel | None:
+    """`EngineConfig.pricing` as the cost gate's price table, used only when the
+    policy sets a cost/token ceiling but has no `cost_model` of its own."""
     if policy.cost_model is not None or not pricing:
-        return policy
+        return None
     if policy.max_cost_usd is None and policy.max_tokens is None:
-        return policy
-    return replace(policy, cost_model=CostModel(prices=dict(pricing)))
+        return None
+    return CostModel(prices=dict(pricing))
 
 
 def _price_for(name: str, pricing: Pricing) -> Mapping[str, float] | None:
@@ -494,7 +494,8 @@ class DynamicSubgraphs:
         self._providers = config.providers or default_model_providers()
         self._checkpointer = config.checkpointer
         self._pricing = config.pricing
-        self._policy = _policy_with_pricing(config.policy, config.pricing)
+        self._policy = config.policy
+        self._cost_model = _pricing_cost_model(config.policy, config.pricing)
         self._max_plan_attempts = config.max_plan_attempts
         self._planner_guidance = config.planner_guidance
 
@@ -616,6 +617,7 @@ class DynamicSubgraphs:
                 policy=self._policy,
                 max_plan_attempts=self._max_plan_attempts,
                 planner_guidance=self._planner_guidance,
+                cost_model=self._cost_model,
             )
             result = supervisor.run(prompt, run_id=run_id)
         except Exception as exc:

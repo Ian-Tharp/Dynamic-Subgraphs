@@ -25,7 +25,7 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 
 from app.compiler import GraphCompilationError
-from app.governance import check_plan_policy, policy_decision_events
+from app.governance import CostModel, check_plan_policy, policy_decision_events
 from app.policy import ExecutionPolicy
 from app.recording import Recorder
 from app.registry import RegistryValidationError, validate_graph_spec
@@ -104,6 +104,7 @@ def build_supervisor_graph(
     policy: ExecutionPolicy | None = None,
     max_plan_attempts: int = 1,
     run_models: Iterable[str] = (),
+    cost_model: CostModel | None = None,
 ) -> StateGraph:
     """Wire the static supervisor StateGraph with injected dependencies.
 
@@ -119,7 +120,8 @@ def build_supervisor_graph(
     (`app.governance.check_plan_policy`) runs on the validated spec; a denied
     plan ends as `policy_denied` (or is repaired, if attempts remain and a
     re-plan could fix it). `run_models` are the run's configured model names,
-    checked against `policy.allowed_models`.
+    checked against `policy.allowed_models`. `cost_model` overrides
+    `policy.cost_model` for the cost gate (e.g. with role-model routing filled in).
     """
 
     graph = StateGraph(SupervisorState)
@@ -127,7 +129,7 @@ def build_supervisor_graph(
     graph.add_node("plan", _make_plan_node(planner, policy))
     graph.add_node(
         "validate",
-        _make_validate_node(policy, max_plan_attempts, tuple(run_models)),
+        _make_validate_node(policy, max_plan_attempts, tuple(run_models), cost_model),
     )
     graph.add_node("execute", _make_execute_node(executor))
     graph.add_node("record", _make_record_node(recorder))
@@ -221,6 +223,7 @@ def _make_validate_node(
     policy: ExecutionPolicy | None = None,
     max_plan_attempts: int = 1,
     run_models: tuple[str, ...] = (),
+    cost_model: CostModel | None = None,
 ):
     effective_policy = policy or ExecutionPolicy()
 
@@ -258,7 +261,9 @@ def _make_validate_node(
                 ],
             }
         # Plan-level policy gate: pure, fail-closed, runs before compile.
-        report = check_plan_policy(validated, effective_policy, run_models=run_models)
+        report = check_plan_policy(
+            validated, effective_policy, run_models=run_models, cost_model=cost_model
+        )
         if not report.allowed:
             issues = [
                 {

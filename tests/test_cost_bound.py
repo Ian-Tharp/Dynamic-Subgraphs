@@ -271,7 +271,7 @@ def test_engine_refuses_over_budget_plan_and_returns_receipt() -> None:
 
 
 def test_llm_runs_route_unset_cost_models_to_role_models() -> None:
-    from app.assembly import RunConfig, _with_cost_defaults, run_model_names
+    from app.assembly import RunConfig, run_model_names, with_cost_defaults
     from app.runtime import ModelRef
 
     config = RunConfig(
@@ -281,9 +281,7 @@ def test_llm_runs_route_unset_cost_models_to_role_models() -> None:
         planner_model=ModelRef("openai", "planner-m"),
         reducer_model=ModelRef("openai", "reducer-m"),
     )
-    policy = ExecutionPolicy(cost_model=CostModel(prices=PRICES))
-
-    cm = _with_cost_defaults(policy, config).cost_model
+    cm = with_cost_defaults(CostModel(prices=PRICES), config)
 
     assert cm is not None
     assert cm.default_model == "worker-m"
@@ -293,11 +291,9 @@ def test_llm_runs_route_unset_cost_models_to_role_models() -> None:
 
 
 def test_explicit_cost_model_routing_wins_over_role_defaults() -> None:
-    from app.assembly import RunConfig, _with_cost_defaults
+    from app.assembly import RunConfig, with_cost_defaults
 
     config = RunConfig(planner="llm", model="worker-m", strict_runners=True)
-    policy = ExecutionPolicy(cost_model=CostModel(prices=PRICES, default_model="cheap"))
-
-    cm = _with_cost_defaults(policy, config).cost_model
+    cm = with_cost_defaults(CostModel(prices=PRICES, default_model="cheap"), config)
 
     assert cm is not None and cm.default_model == "cheap"

@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
-from app.governance import CatalogPlanner
+from app.governance import CatalogPlanner, CostModel
 from app.models import DynamicRunState, GraphSpec, NodeKind
 from app.policy import ExecutionPolicy
 from app.recording import Recorder
@@ -237,6 +237,7 @@ def build_supervisor(
     policy: ExecutionPolicy | None = None,
     max_plan_attempts: int = 1,
     planner_guidance: str | None = None,
+    cost_model: CostModel | None = None,
 ) -> Supervisor:
     """Construct a Supervisor wired for `config`.
 
@@ -248,10 +249,16 @@ def build_supervisor(
     callback to capture token counts). `policy` is the host-owned
     `ExecutionPolicy` enforced at validation — for the root run **and** every
     nested `spawn_subgraph` child — so a planner can never grant itself a larger
-    budget than the host allows.
+    budget than the host allows. `cost_model` prices plans for the cost gate
+    (default: `policy.cost_model`); unset model routing is filled from this
+    run's role models. The policy itself is never rewritten, so receipts hash
+    the policy exactly as the host configured it.
     """
 
-    effective_policy = _with_cost_defaults(policy or ExecutionPolicy(), config)
+    effective_policy = policy or ExecutionPolicy()
+    effective_cost_model = with_cost_defaults(
+        cost_model or effective_policy.cost_model, config
+    )
     run_models = run_model_names(config)
 
     runs_dir = str(getattr(recorder, "root_dir", "runs"))
@@ -320,6 +327,7 @@ def build_supervisor(
         policy=effective_policy,
         max_plan_attempts=max_plan_attempts,
         run_models=run_models,
+        cost_model=effective_cost_model,
     )
 
 
@@ -338,15 +346,17 @@ def run_model_names(config: RunConfig) -> tuple[str, ...]:
     return tuple(sorted({r.model for r in refs}))
 
 
-def _with_cost_defaults(policy: ExecutionPolicy, config: RunConfig) -> ExecutionPolicy:
-    """Route unpriced node kinds in the policy's cost model to this run's role models.
+def with_cost_defaults(
+    cost_model: CostModel | None, config: RunConfig
+) -> CostModel | None:
+    """Route a cost model's unset node kinds to this run's role models.
 
     Explicit `CostModel` routing wins; this only fills gaps so a host can give
     just a price table. No-op without a cost model or on the mock path.
     """
-    if policy.cost_model is None or config.planner == "mock":
-        return policy
-    cost_model = policy.cost_model.with_role_defaults(
+    if cost_model is None or config.planner == "mock":
+        return cost_model
+    return cost_model.with_role_defaults(
         default_model=config.worker_ref.model,
         kind_models={
             NodeKind.REDUCE: config.reducer_ref.model,
@@ -354,4 +364,3 @@ def _with_cost_defaults(policy: ExecutionPolicy, config: RunConfig) -> Execution
         },
         extra_models=(config.planner_ref.model, config.judge_ref.model),
     )
-    return replace(policy, cost_model=cost_model)

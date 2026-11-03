@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.errors import DynamicSubgraphsError
-from app.governance.cost import CostBound, estimate_plan_cost
+from app.governance.cost import CostBound, CostModel, estimate_plan_cost
 from app.governance.hashing import plan_hash, sha256_hex
 from app.models.graph_spec import (
     SPECIAL_NODE_END,
@@ -433,10 +433,11 @@ def _gate_catalog(
 
 
 def _gate_cost(
-    spec: GraphSpec, policy: ExecutionPolicy
+    spec: GraphSpec, policy: ExecutionPolicy, cost_model: CostModel | None
 ) -> tuple[GateDecision, CostBound | None]:
     has_ceiling = policy.max_cost_usd is not None or policy.max_tokens is not None
-    if policy.cost_model is None:
+    cost_model = cost_model or policy.cost_model
+    if cost_model is None:
         if policy.max_cost_usd is not None:
             v = PolicyViolation(
                 "cost",
@@ -449,11 +450,9 @@ def _gate_cost(
             return GateDecision("cost", True, (), {"mode": "off"}), None
     max_llm_calls = min(policy.max_llm_calls, spec.budget.max_llm_calls)
     max_fanout = min(policy.max_fanout, spec.budget.max_fanout)
-    from app.governance.cost import CostModel
-
     bound = estimate_plan_cost(
         spec,
-        policy.cost_model or CostModel(),
+        cost_model or CostModel(),
         max_llm_calls=max_llm_calls,
         max_fanout=max_fanout,
     )
@@ -486,7 +485,12 @@ def _gate_cost(
                     f"${policy.max_cost_usd:.6f}",
                 )
             )
-    details = {"mode": "enforce" if has_ceiling else "estimate", **bound.as_dict()}
+    details = {
+        "mode": "enforce" if has_ceiling else "estimate",
+        **bound.as_dict(),
+        # The exact prices/caps/routing used, so the bound can be recomputed.
+        "cost_model_hash": sha256_hex(cost_model.as_dict()) if cost_model else None,
+    }
     return GateDecision("cost", not out, tuple(out), details), bound
 
 
@@ -506,6 +510,7 @@ def check_plan_policy(
     *,
     run_models: Iterable[str] = (),
     gates: Iterable[str] = GATES,
+    cost_model: CostModel | None = None,
 ) -> PlanGateReport:
     """Run the plan gate. Pure and deterministic; never raises for a bad plan.
 
@@ -516,6 +521,10 @@ def check_plan_policy(
             reducer, ...); checked against ``policy.allowed_models``.
         gates: subset of ``GATES`` to run (nested children skip ``cost``, which
             the root bound already covers).
+        cost_model: the cost model to price with, overriding
+            ``policy.cost_model`` (the SDK passes one with the run's role models
+            filled in). The report's ``policy_hash`` is always of ``policy`` as
+            given, so it matches the policy the host configured.
     """
     selected = set(gates)
     decisions: list[GateDecision] = []
@@ -540,7 +549,7 @@ def check_plan_policy(
             decisions.append(res[0])
             entry_id, entry_hash = res[1], res[2]
     if "cost" in selected:
-        res = _guard("cost", lambda: _gate_cost(spec, policy))
+        res = _guard("cost", lambda: _gate_cost(spec, policy, cost_model))
         if isinstance(res, GateDecision):
             decisions.append(res)
         else:
@@ -578,9 +587,12 @@ def enforce_plan_policy(
     *,
     run_models: Iterable[str] = (),
     gates: Iterable[str] = GATES,
+    cost_model: CostModel | None = None,
 ) -> PlanGateReport:
     """``check_plan_policy`` that raises ``PlanPolicyViolation`` on a deny."""
-    report = check_plan_policy(spec, policy, run_models=run_models, gates=gates)
+    report = check_plan_policy(
+        spec, policy, run_models=run_models, gates=gates, cost_model=cost_model
+    )
     if not report.allowed:
         raise PlanPolicyViolation(report)
     return report
