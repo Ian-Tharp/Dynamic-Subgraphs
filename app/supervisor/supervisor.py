@@ -166,7 +166,13 @@ class Supervisor:
                 gate_report=result.gate_report,
                 llm_calls=llm_calls,
                 model_ids=declared,
-                recorder_run_id=result.record.run_id if result.record else None,
+                # Only a record that persisted something can back the receipt
+                # (NullRecorder returns a record with no artifacts).
+                recorder_run_id=(
+                    result.record.run_id
+                    if result.record is not None and result.record.artifacts
+                    else None
+                ),
                 trace_events=exec_result.trace.events if exec_result else None,
             )
         except Exception:
