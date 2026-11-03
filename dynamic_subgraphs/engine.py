@@ -37,12 +37,14 @@ import logging
 import uuid
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from langchain_core.callbacks import UsageMetadataCallbackHandler
 
 from app.assembly import RunConfig, build_supervisor
+from app.governance import CostModel, ProvenanceReceipt, build_receipt, policy_hash
 from app.models import GraphSpec
 from app.policy import ExecutionPolicy
 from app.recording import FileRecorder, NullRecorder
@@ -165,6 +167,18 @@ class ModelSelection:
         )
 
 
+def _policy_with_pricing(
+    policy: ExecutionPolicy, pricing: Pricing | None
+) -> ExecutionPolicy:
+    """Use `EngineConfig.pricing` as the cost model's price table when the
+    policy sets a cost/token ceiling but no `cost_model` of its own."""
+    if policy.cost_model is not None or not pricing:
+        return policy
+    if policy.max_cost_usd is None and policy.max_tokens is None:
+        return policy
+    return replace(policy, cost_model=CostModel(prices=dict(pricing)))
+
+
 def _price_for(name: str, pricing: Pricing) -> Mapping[str, float] | None:
     """Look up a model's price, tolerating dated snapshots.
 
@@ -251,6 +265,11 @@ class RunResult:
             field). None if planning/validation failed. Equals `plan.budget`.
         plan_attempts: how many times the planner ran (1 unless the plan-repair
             loop re-planned after a recoverable validation failure).
+        receipt: the tamper-evident `ProvenanceReceipt` — policy and plan
+            hashes, plan-gate decisions, cost bound vs actual, model ids,
+            timestamps, recorder run id. Present for every run, including
+            refused (`policy_denied`) and failed ones. Verify it with
+            `verify_receipt(receipt, runs_dir / receipt.recorder_run_id)`.
 
     Use `to_dict()` for a JSON-safe view (handy for logging or handing to
     another tool/agent).
@@ -268,6 +287,7 @@ class RunResult:
     effective_budget: dict[str, Any] | None = None
     plan_attempts: int = 1
     eval: EvalResult | None = None
+    receipt: ProvenanceReceipt | None = None
 
     @property
     def ok(self) -> bool:
@@ -299,6 +319,7 @@ class RunResult:
             "effective_budget": self.effective_budget,
             "plan_attempts": self.plan_attempts,
             "eval": self.eval.model_dump(mode="json") if self.eval else None,
+            "receipt": (self.receipt.model_dump(mode="json") if self.receipt else None),
         }
 
     @classmethod
@@ -341,6 +362,7 @@ class RunResult:
             cost=cost,
             effective_budget=effective_budget,
             plan_attempts=getattr(result, "plan_attempts", 1),
+            receipt=getattr(result, "receipt", None),
         )
 
 
@@ -472,7 +494,7 @@ class DynamicSubgraphs:
         self._providers = config.providers or default_model_providers()
         self._checkpointer = config.checkpointer
         self._pricing = config.pricing
-        self._policy = config.policy
+        self._policy = _policy_with_pricing(config.policy, config.pricing)
         self._max_plan_attempts = config.max_plan_attempts
         self._planner_guidance = config.planner_guidance
 
@@ -554,6 +576,7 @@ class DynamicSubgraphs:
         if fixed_spec is not None:
             config = replace(config, fixed_spec=fixed_spec)
         run_id = run_id or f"run-{uuid.uuid4().hex[:12]}"
+        started_at = datetime.now(UTC)
 
         # Recording is opt-in and granular. By default (none) the engine
         # writes no files; a policy selects exactly which artifacts persist.
@@ -596,8 +619,20 @@ class DynamicSubgraphs:
             )
             result = supervisor.run(prompt, run_id=run_id)
         except Exception as exc:
+            receipt = None
+            try:
+                receipt = build_receipt(
+                    run_id=run_id,
+                    status="engine_failed",
+                    policy_hash=policy_hash(self._policy),
+                    started_at=started_at,
+                    finished_at=datetime.now(UTC),
+                )
+            except Exception:  # a receipt problem never masks the real failure
+                logger.warning("failed to build receipt for %r", run_id, exc_info=True)
             return RunResult(
                 run_id=run_id,
+                receipt=receipt,
                 status="engine_failed",
                 response=(f"Run halted before execution: {type(exc).__name__}: {exc}"),
                 errors=[
@@ -613,6 +648,16 @@ class DynamicSubgraphs:
 
         usage = TokenUsage.from_handler(usage_handler)
         cost = _compute_cost(usage, self._pricing)
+        if result.receipt is not None:
+            # The supervisor can't see provider usage; fill in observed tokens,
+            # dollars and model names, reseal, and rewrite receipt.json.
+            receipt = result.receipt.with_actual(
+                tokens=usage.total_tokens,
+                usd=cost,
+                models=usage.by_model.keys(),
+            )
+            supervisor.persist_receipt(receipt)
+            result = replace(result, receipt=receipt)
         run_result = RunResult._from_supervisor(
             result,
             runs_dir=self._runs_dir,

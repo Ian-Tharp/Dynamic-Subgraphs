@@ -31,6 +31,8 @@ class Artifact(StrEnum):
         - `SPEC` (`spec.json`) is required by `resume`/`replay`.
         - `EVAL` (`eval.json`) is the persisted `EvalResult` score; written
           only when `EngineConfig.eval_gate` is configured.
+        - `RECEIPT` (`receipt.json`) is the provenance receipt: policy and
+          plan hashes, plan-gate decisions, cost bound vs actual.
         - `EMITTED` toggles whether `emit_artifact` node outputs are written
           to disk (under ``runs/<run_id>/artifacts/``) vs kept in memory.
           It has no single filename, so its value is the sentinel "emitted".
@@ -43,6 +45,7 @@ class Artifact(StrEnum):
     SUMMARY = "summary.md"
     PROMPT = "prompt.md"
     EVAL = "eval.json"
+    RECEIPT = "receipt.json"
     EMITTED = "emitted"
 
 

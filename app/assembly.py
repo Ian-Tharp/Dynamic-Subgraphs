@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
+from app.governance import CatalogPlanner
 from app.models import DynamicRunState, GraphSpec, NodeKind
 from app.policy import ExecutionPolicy
 from app.recording import Recorder
@@ -166,9 +167,13 @@ def _build_planner(
     model_providers: ProviderRegistry,
     chat_callbacks: list[Any] | None = None,
     planner_guidance: str | None = None,
+    policy: ExecutionPolicy | None = None,
 ) -> Planner:
     if config.fixed_spec is not None:
         return StaticPlanner(config.fixed_spec)
+    if policy is not None and policy.approved_catalog is not None:
+        # Catalog mode: select an approved subgraph, never synthesize one.
+        return CatalogPlanner(policy.approved_catalog)
     if config.planner == "llm":
         ref = _attach_callbacks(config.planner_ref, chat_callbacks)
         provider = model_providers.get(ref.provider)
@@ -246,7 +251,8 @@ def build_supervisor(
     budget than the host allows.
     """
 
-    effective_policy = policy or ExecutionPolicy()
+    effective_policy = _with_cost_defaults(policy or ExecutionPolicy(), config)
+    run_models = run_model_names(config)
 
     runs_dir = str(getattr(recorder, "root_dir", "runs"))
     providers = model_providers or default_model_providers()
@@ -255,6 +261,7 @@ def build_supervisor(
         model_providers=providers,
         chat_callbacks=chat_callbacks,
         planner_guidance=planner_guidance,
+        policy=effective_policy,
     )
     runners = _build_runners(
         config,
@@ -281,8 +288,15 @@ def build_supervisor(
         # An LLM planner's runtime planning call is a real model call and
         # must be charged against the parent's LLM budget; mock/static
         # planners (and fixed_spec runs) are token-free.
+        # A catalog planner with the default keyword selector is token-free;
+        # a custom selector may call a model, so it is charged.
         planner_counts_as_llm_call=(
-            config.planner == "llm" and config.fixed_spec is None
+            config.planner == "llm"
+            and config.fixed_spec is None
+            and (
+                effective_policy.approved_catalog is None
+                or effective_policy.approved_catalog.selector is not None
+            )
         ),
     )
     runners[NodeKind.SPAWN_SUBGRAPH] = build_spawn_subgraph_runner(
@@ -305,4 +319,39 @@ def build_supervisor(
         recorder=recorder,
         policy=effective_policy,
         max_plan_attempts=max_plan_attempts,
+        run_models=run_models,
     )
+
+
+def run_model_names(config: RunConfig) -> tuple[str, ...]:
+    """Model names a run is configured to call (empty on the token-free mock path)."""
+    if config.planner == "mock":
+        return ()
+    refs = [
+        config.worker_ref,
+        config.reducer_ref,
+        config.subagent_ref,
+        config.judge_ref,
+    ]
+    if config.fixed_spec is None:
+        refs.append(config.planner_ref)
+    return tuple(sorted({r.model for r in refs}))
+
+
+def _with_cost_defaults(policy: ExecutionPolicy, config: RunConfig) -> ExecutionPolicy:
+    """Route unpriced node kinds in the policy's cost model to this run's role models.
+
+    Explicit `CostModel` routing wins; this only fills gaps so a host can give
+    just a price table. No-op without a cost model or on the mock path.
+    """
+    if policy.cost_model is None or config.planner == "mock":
+        return policy
+    cost_model = policy.cost_model.with_role_defaults(
+        default_model=config.worker_ref.model,
+        kind_models={
+            NodeKind.REDUCE: config.reducer_ref.model,
+            NodeKind.SPAWN_SUBAGENT: config.subagent_ref.model,
+        },
+        extra_models=(config.planner_ref.model, config.judge_ref.model),
+    )
+    return replace(policy, cost_model=cost_model)

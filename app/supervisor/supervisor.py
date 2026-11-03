@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from app.governance import (
+    PlanGateReport,
+    ProvenanceReceipt,
+    build_receipt,
+    check_plan_policy,
+    plan_hash,
+    policy_decision_events,
+    policy_hash,
+)
 from app.models import GraphSpec
 from app.policy import ExecutionPolicy
 from app.recording import Recorder, RunRecord
@@ -50,6 +60,12 @@ class SupervisorResult:
     # How many times the planner ran (1 unless the plan-repair loop re-planned
     # after a recoverable validation failure).
     plan_attempts: int = 1
+    # Plan-level policy gate outcome for the last checked plan (None if the
+    # run never produced a registry-valid plan).
+    gate_report: PlanGateReport | None = None
+    # Tamper-evident provenance receipt (see app.governance.receipt). Built for
+    # every run()/replay() outcome, including refused and failed runs.
+    receipt: ProvenanceReceipt | None = None
 
 
 class Supervisor:
@@ -69,23 +85,34 @@ class Supervisor:
         recorder: Recorder,
         policy: ExecutionPolicy | None = None,
         max_plan_attempts: int = 1,
+        run_models: Iterable[str] = (),
     ) -> None:
         self._planner = planner
         self._executor = executor
         self._recorder = recorder
         self._policy = policy or ExecutionPolicy()
         self._max_plan_attempts = max(1, max_plan_attempts)
+        # Model names this supervisor's runs are configured with (planner,
+        # worker, ...): checked against policy.allowed_models and listed on
+        # every receipt.
+        self._run_models = tuple(sorted(set(run_models)))
         self._graph = build_supervisor_graph(
             planner=planner,
             executor=executor,
             recorder=recorder,
             policy=self._policy,
             max_plan_attempts=self._max_plan_attempts,
+            run_models=self._run_models,
         ).compile()
 
+    @property
+    def policy(self) -> ExecutionPolicy:
+        return self._policy
+
     def run(self, prompt: str, *, run_id: str) -> SupervisorResult:
+        started_at = datetime.now(UTC)
         final_state = self._graph.invoke({"prompt": prompt, "run_id": run_id})
-        return SupervisorResult(
+        result = SupervisorResult(
             run_id=run_id,
             status=final_state.get("status", "unknown"),
             response=final_state.get("response", ""),
@@ -94,7 +121,73 @@ class Supervisor:
             record=final_state.get("record"),
             errors=list(final_state.get("errors", [])),
             plan_attempts=final_state.get("plan_attempts", 1),
+            gate_report=final_state.get("gate_report"),
         )
+        refused = final_state.get("last_rejected_spec")
+        return self._with_receipt(
+            result,
+            started_at=started_at,
+            refused_spec=refused if result.validated_spec is None else None,
+        )
+
+    def _with_receipt(
+        self,
+        result: SupervisorResult,
+        *,
+        started_at: datetime,
+        refused_spec: GraphSpec | None = None,
+    ) -> SupervisorResult:
+        """Attach a sealed receipt and persist it next to the run's record.
+
+        Never raises: a receipt problem is logged and the run's outcome stands.
+        """
+        try:
+            spec = result.validated_spec or refused_spec
+            exec_result = result.result
+            counters = (
+                (exec_result.state or {}).get("counters", {}) if exec_result else {}
+            )
+            llm_calls = (
+                int(counters.get("llm_calls_consumed", 0)) if exec_result else None
+            )
+            declared = set(self._run_models)
+            if spec is not None:
+                from app.governance.plan_gate import node_models
+
+                for node in spec.nodes:
+                    declared.update(node_models(node))
+            receipt = build_receipt(
+                run_id=result.run_id,
+                status=str(result.status),
+                policy_hash=policy_hash(self._policy),
+                started_at=started_at,
+                finished_at=datetime.now(UTC),
+                plan_hash=plan_hash(spec) if spec is not None else None,
+                gate_report=result.gate_report,
+                llm_calls=llm_calls,
+                model_ids=declared,
+                recorder_run_id=result.record.run_id if result.record else None,
+                trace_events=exec_result.trace.events if exec_result else None,
+            )
+        except Exception:
+            logger.warning(
+                "failed to build receipt for %r", result.run_id, exc_info=True
+            )
+            return result
+        self.persist_receipt(receipt)
+        return _replace_result(result, receipt=receipt)
+
+    def persist_receipt(self, receipt: ProvenanceReceipt) -> None:
+        """Write ``receipt.json`` if the recorder supports it and the run was recorded."""
+        writer = getattr(self._recorder, "record_receipt", None)
+        if writer is None or receipt.recorder_run_id is None:
+            return
+        try:
+            writer(receipt.recorder_run_id, receipt.model_dump(mode="json"))
+        except Exception:
+            logger.warning(
+                "failed to persist receipt for %r", receipt.run_id, exc_info=True
+            )
 
     def run_iteratively(
         self,
@@ -259,6 +352,16 @@ class Supervisor:
         fresh — it does not auto-resume from where the original left off.
         """
 
+        started_at = datetime.now(UTC)
+        result = self._replay(run_id, new_run_id=new_run_id)
+        return self._with_receipt(result, started_at=started_at)
+
+    def _replay(
+        self,
+        run_id: str,
+        *,
+        new_run_id: str | None = None,
+    ) -> SupervisorResult:
         effective_new_run_id = new_run_id or self._default_replay_run_id(run_id)
 
         try:
@@ -317,6 +420,33 @@ class Supervisor:
                 ],
             )
 
+        # The plan gate applies to replays too: a recorded plan that the current
+        # policy would refuse (tightened budget, new data-flow rule, catalog
+        # mode) does not run again.
+        gate_report = check_plan_policy(spec, self._policy, run_models=self._run_models)
+        if not gate_report.allowed:
+            return SupervisorResult(
+                run_id=effective_new_run_id,
+                status=RunStatus.POLICY_DENIED,
+                response=(
+                    f"Replay halted: recorded spec for {run_id!r} is refused by "
+                    f"the current plan policy: "
+                    + "; ".join(v.message for v in gate_report.violations)
+                ),
+                validated_spec=None,
+                result=None,
+                record=None,
+                errors=[
+                    {
+                        "stage": "replay_policy_gate",
+                        "type": "PlanPolicyViolation",
+                        "message": "; ".join(v.message for v in gate_report.violations),
+                        "issues": [v.as_dict() for v in gate_report.violations],
+                    }
+                ],
+                gate_report=gate_report,
+            )
+
         try:
             compiled = self._executor.compile(spec)
         except Exception as exc:
@@ -345,6 +475,7 @@ class Supervisor:
                 run_id=effective_new_run_id,
                 initial_metadata={"replay_of": run_id},
             )
+            result.trace.events[:0] = policy_decision_events(gate_report)
         except Exception as exc:
             return SupervisorResult(
                 run_id=effective_new_run_id,
@@ -411,6 +542,7 @@ class Supervisor:
             result=result,
             record=record,
             errors=errors,
+            gate_report=gate_report,
         )
 
     @staticmethod
@@ -575,6 +707,12 @@ class Supervisor:
             record=record,
             errors=errors,
         )
+
+
+def _replace_result(result: SupervisorResult, **changes: Any) -> SupervisorResult:
+    from dataclasses import replace
+
+    return replace(result, **changes)
 
 
 def _iteration_run_id(chain_id: str, iteration: int) -> str:

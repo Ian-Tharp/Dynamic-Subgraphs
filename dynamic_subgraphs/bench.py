@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from app.errors import DynamicSubgraphsError
+from app.governance.catalog import fill_spec as _fill_spec
 from app.models.graph_spec import GraphSpec
 from dynamic_subgraphs.engine import DynamicSubgraphs, EngineConfig, Model
 from dynamic_subgraphs.eval.types import EvalReference, Origin
@@ -84,29 +85,16 @@ class BenchTask:
 # ---------------------------------------------------------------------------
 
 
-def _fill_value(value: Any, prompt: str) -> Any:
-    """Recursively replace the literal substring ``{prompt}`` in every string."""
-    if isinstance(value, str):
-        return value.replace("{prompt}", prompt)
-    if isinstance(value, dict):
-        return {k: _fill_value(v, prompt) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_fill_value(item, prompt) for item in value]
-    return value
-
-
 def fill_spec(spec: GraphSpec, prompt: str) -> GraphSpec:
     """Return a deep-copied ``GraphSpec`` with ``{prompt}`` substituted.
 
     Uses ``str.replace`` — never ``str.format`` — so user prompts containing
     braces, quotes, or backslashes are safe. Substitution walks every node's
     ``params`` dict recursively (instructions, tool args, any future nested
-    child_params). The original ``spec`` object is never mutated.
+    child_params). The original ``spec`` object is never mutated. Shared with
+    the approved-subgraph catalog (``app.governance.fill_spec``).
     """
-    copy = spec.model_copy(deep=True)
-    for node in copy.nodes:
-        node.params = _fill_value(node.params, prompt)
-    return copy
+    return _fill_spec(spec, prompt)
 
 
 # ---------------------------------------------------------------------------

@@ -19,11 +19,13 @@ failures: the inner result is recorded normally and the supervisor reports
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
 from app.compiler import GraphCompilationError
+from app.governance import check_plan_policy, policy_decision_events
 from app.policy import ExecutionPolicy
 from app.recording import Recorder
 from app.registry import RegistryValidationError, validate_graph_spec
@@ -36,6 +38,7 @@ from app.supervisor.state import RunStatus, SupervisorState
 # status strings have one definition.
 _PLAN_FAILED = RunStatus.PLAN_FAILED
 _VALIDATION_FAILED = RunStatus.VALIDATION_FAILED
+_POLICY_DENIED = RunStatus.POLICY_DENIED
 _COMPILE_FAILED = RunStatus.COMPILE_FAILED
 # Transient: validation failed but a repair attempt remains. Always routes
 # straight back to `plan`, so it is never a final status.
@@ -80,6 +83,14 @@ def _build_repair_prompt(
         f"- at most {policy.max_llm_calls} LLM calls",
         f"- nesting depth at most {policy.max_depth}",
     ]
+    if policy.max_plan_length is not None:
+        lines.append(f"- at most {policy.max_plan_length} nodes on any START->END path")
+    if policy.max_cost_usd is not None:
+        lines.append(
+            f"- worst-case cost at most ${policy.max_cost_usd} (use fewer LLM nodes)"
+        )
+    if policy.max_tokens is not None:
+        lines.append(f"- worst-case tokens at most {policy.max_tokens}")
     if rejected_spec is not None:
         lines += ["", "The rejected plan was:", rejected_spec.model_dump_json()]
     return "\n".join(lines)
@@ -92,6 +103,7 @@ def build_supervisor_graph(
     recorder: Recorder,
     policy: ExecutionPolicy | None = None,
     max_plan_attempts: int = 1,
+    run_models: Iterable[str] = (),
 ) -> StateGraph:
     """Wire the static supervisor StateGraph with injected dependencies.
 
@@ -102,12 +114,21 @@ def build_supervisor_graph(
     the validator for a *repairable* reason and attempts remain, the validator's
     issues + the host limits are fed back into a re-plan (`validate -> plan`).
     `1` (the default here) disables repair — block and report on first failure.
+
+    After registry validation the plan-level policy gate
+    (`app.governance.check_plan_policy`) runs on the validated spec; a denied
+    plan ends as `policy_denied` (or is repaired, if attempts remain and a
+    re-plan could fix it). `run_models` are the run's configured model names,
+    checked against `policy.allowed_models`.
     """
 
     graph = StateGraph(SupervisorState)
     graph.add_node("receive", _make_receive_node())
     graph.add_node("plan", _make_plan_node(planner, policy))
-    graph.add_node("validate", _make_validate_node(policy, max_plan_attempts))
+    graph.add_node(
+        "validate",
+        _make_validate_node(policy, max_plan_attempts, tuple(run_models)),
+    )
     graph.add_node("execute", _make_execute_node(executor))
     graph.add_node("record", _make_record_node(recorder))
     graph.add_node("respond", _make_respond_node())
@@ -139,7 +160,7 @@ def _route_after_validate(state: SupervisorState) -> str:
     status = state.get("status")
     if status == _PLAN_REPAIR_NEEDED:
         return "plan"  # the validator decided a repair attempt remains
-    if status == _VALIDATION_FAILED:
+    if status in (_VALIDATION_FAILED, _POLICY_DENIED):
         return "record"
     return "execute"
 
@@ -197,8 +218,12 @@ def _make_plan_node(planner: Planner, policy: ExecutionPolicy | None = None):
 
 
 def _make_validate_node(
-    policy: ExecutionPolicy | None = None, max_plan_attempts: int = 1
+    policy: ExecutionPolicy | None = None,
+    max_plan_attempts: int = 1,
+    run_models: tuple[str, ...] = (),
 ):
+    effective_policy = policy or ExecutionPolicy()
+
     def validate(state: SupervisorState) -> SupervisorState:
         try:
             validated = validate_graph_spec(state["spec"], policy=policy)
@@ -232,7 +257,42 @@ def _make_validate_node(
                     }
                 ],
             }
-        return {"validated_spec": validated}
+        # Plan-level policy gate: pure, fail-closed, runs before compile.
+        report = check_plan_policy(validated, effective_policy, run_models=run_models)
+        if not report.allowed:
+            issues = [
+                {
+                    "code": v.code,
+                    "message": v.message,
+                    "node_id": v.node_id,
+                    "field": v.field,
+                    "gate": v.gate,
+                }
+                for v in report.violations
+            ]
+            attempts = state.get("plan_attempts", 1)
+            if attempts < max_plan_attempts and report.repairable:
+                return {
+                    "status": _PLAN_REPAIR_NEEDED,
+                    "last_validation_issues": issues,
+                    "last_rejected_spec": state.get("spec"),
+                    "gate_report": report,
+                }
+            return {
+                "status": _POLICY_DENIED,
+                "gate_report": report,
+                # Keep the refused plan visible (receipt plan_hash, failure record).
+                "last_rejected_spec": validated,
+                "errors": [
+                    {
+                        "stage": "policy_gate",
+                        "type": "PlanPolicyViolation",
+                        "message": "; ".join(i["message"] for i in issues),
+                        "issues": issues,
+                    }
+                ],
+            }
+        return {"validated_spec": validated, "gate_report": report}
 
     return validate
 
@@ -270,6 +330,12 @@ def _make_execute_node(executor: GraphExecutor):
                     }
                 ],
             }
+        # Put the plan gate's decisions at the head of the run's trace so the
+        # recorder log (trace.jsonl) carries them and a receipt can be
+        # verified against it.
+        gate_events = policy_decision_events(state.get("gate_report"))
+        if gate_events:
+            result.trace.events[:0] = gate_events
         if result.paused:
             status: str = RunStatus.PAUSED
         elif result.ok:
@@ -375,7 +441,12 @@ def _make_respond_node():
                 f"Run paused waiting for {label}. "
                 f"Call supervisor.resume(run_id, event=...) to continue."
             )
-        elif status in {_PLAN_FAILED, _VALIDATION_FAILED, _COMPILE_FAILED}:
+        elif status in {
+            _PLAN_FAILED,
+            _VALIDATION_FAILED,
+            _POLICY_DENIED,
+            _COMPILE_FAILED,
+        }:
             last_error = (state.get("errors") or [{}])[-1]
             response = (
                 f"Run halted at stage '{last_error.get('stage', '?')}': "

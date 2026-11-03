@@ -22,6 +22,7 @@ RunStatus = Literal[
     "paused",
     "plan_failed",
     "validation_failed",
+    "policy_denied",
     "compile_failed",
     "execution_failed",
     "record_failed",
