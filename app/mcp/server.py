@@ -36,7 +36,8 @@ host's budget, and recorded under a run id.
 Typical flow:
 1. `server_info` / `describe_registry` to see the limits and building blocks.
 2. `run_subgraph` with the task. Check `status` (ok, paused, plan_failed,
-   validation_failed, execution_failed, ...) and read `response` / `values`.
+   validation_failed, policy_denied, execution_failed, ...) and read
+   `response` / `values`. `receipt` is the run's sealed provenance receipt.
 3. If `status` is "paused", the plan is waiting on an external event: call
    `resume_run` with that event.
 4. Inspect any run with `get_run`, `get_run_file` (spec, trace, graph, ...),
@@ -46,7 +47,9 @@ You may tighten a run's limits (max_nodes, max_llm_calls, max_wall_seconds) but
 never exceed the host policy. Failed runs are recorded too — read their errors.
 """
 
-RunFileName = Literal["spec", "output", "trace", "graph", "summary", "prompt", "eval"]
+RunFileName = Literal[
+    "spec", "output", "trace", "graph", "summary", "prompt", "eval", "receipt"
+]
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 
@@ -216,7 +219,8 @@ def build_server(service: GovernedRunService) -> MCPServer:
             Field(
                 description=(
                     "spec (the validated GraphSpec), output, trace (per-node "
-                    "events, JSONL), graph (Mermaid), summary, prompt, or eval."
+                    "events, JSONL), graph (Mermaid), summary, prompt, eval, "
+                    "or receipt (provenance receipt)."
                 )
             ),
         ],

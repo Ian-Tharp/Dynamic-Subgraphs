@@ -18,7 +18,8 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
   `DS_PLANNER=llm`; models must be allowlisted; every run is recorded; client
   run ids can't overwrite existing runs; bad config fails at startup. The rules
   live in `GovernedRunService` (no MCP import), so they're tested without the
-  SDK. See `docs/mcp.md`.
+  SDK. Run/resume/replay results carry the run's provenance `receipt`, and
+  `get_run_file` can read `receipt`. See `docs/mcp.md`.
 - The run-config sidecar helpers moved to `app.recording.run_config` so the MCP
   server can share them without importing FastAPI. `app.api.run_config_store`
   re-exports them.

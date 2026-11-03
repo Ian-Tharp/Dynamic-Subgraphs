@@ -63,6 +63,7 @@ RUN_FILES: dict[str, str] = {
     "summary": "summary.md",
     "prompt": "prompt.txt",
     "eval": "eval.json",
+    "receipt": "receipt.json",
 }
 _MAX_FILE_CHARS = 200_000
 # Statuses where the run did what was asked (or is waiting on the caller).
@@ -507,6 +508,7 @@ class GovernedRunService:
                 ],
             }
         limit = self.settings.max_value_chars
+        receipt = getattr(result, "receipt", None)
         return {
             "run_id": result.run_id,
             "status": result.status,
@@ -524,6 +526,10 @@ class GovernedRunService:
             "usage": usage,
             "artifacts": artifacts,
             "recorded": self.recorder.exists(result.run_id),
+            # Sealed provenance receipt (unclipped: clipping would break its hash).
+            "receipt": (
+                receipt.model_dump(mode="json") if receipt is not None else None
+            ),
         }
 
 

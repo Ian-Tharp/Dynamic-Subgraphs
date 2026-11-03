@@ -146,6 +146,10 @@ def test_run_mock_is_recorded_with_audit_trail(tmp_path) -> None:
     assert out["values"]
     assert out["granted_budget"]["max_nodes"] <= service.settings.policy.max_nodes
     assert out["usage"]["total_tokens"] == 0  # mock is token-free
+    assert out["receipt"]["status"] == "ok"
+    assert out["receipt"]["recorder_run_id"] == "mcp-1"
+    stored = json.loads(service.get_run_file("mcp-1", "receipt"))
+    assert stored["receipt_hash"] == out["receipt"]["receipt_hash"]
 
     run = service.get_run("mcp-1")
     assert run["ok"] is True
@@ -213,6 +217,18 @@ def test_caller_budget_narrowing_fails_closed(tmp_path) -> None:
     assert out["host_policy"]["max_nodes"] == 1
     assert out["errors"]
     assert service.recorder.exists("tight")
+
+
+def test_plan_gate_denial_returns_policy_denied_with_receipt(tmp_path) -> None:
+    # A plan-length ceiling of 1 refuses the multi-node demo plan at the #60
+    # plan gate; the tool result must report it, not crash, and carry a receipt.
+    service = _service(
+        tmp_path, policy=ExecutionPolicy(max_plan_length=1), max_plan_attempts=1
+    )
+    out = service.run("compare A and B", run_id="denied")
+    assert out["status"] == "policy_denied"
+    assert not out["ok"] and not out["healthy"]
+    assert out["receipt"]["status"] == "policy_denied"
 
 
 def test_host_policy_node_kind_ban_is_enforced(tmp_path) -> None:

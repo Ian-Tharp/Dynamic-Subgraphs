@@ -64,7 +64,7 @@ Claude Desktop (`claude_desktop_config.json`) or any host using the common
 | `describe_registry` | yes | Node kinds, tools, and subagents available under the host policy. |
 | `list_runs` | yes | Recorded runs (id, status, node count, eval scores). |
 | `get_run` | yes | Outcome, values, errors, config, readable files, and artifacts for a run. |
-| `get_run_file` | yes | One recorded file: `spec`, `output`, `trace`, `graph`, `summary`, `prompt`, `eval`. |
+| `get_run_file` | yes | One recorded file: `spec`, `output`, `trace`, `graph`, `summary`, `prompt`, `eval`, `receipt`. |
 | `get_artifact` | yes | A file written by an `emit_artifact` node. |
 
 `run_subgraph` / `resume_run` / `replay_run` return:
@@ -72,7 +72,7 @@ Claude Desktop (`claude_desktop_config.json`) or any host using the common
 ```jsonc
 {
   "run_id": "run-1a2b3c4d5e6f",
-  "status": "ok",            // ok | paused | plan_failed | validation_failed | execution_failed | ...
+  "status": "ok",            // ok | paused | plan_failed | validation_failed | policy_denied | execution_failed | ...
   "ok": true,
   "healthy": true,           // ok or paused
   "response": "...",
@@ -84,7 +84,8 @@ Claude Desktop (`claude_desktop_config.json`) or any host using the common
   "plan_attempts": 1,
   "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "by_model": {}},
   "artifacts": [],
-  "recorded": true
+  "recorded": true,
+  "receipt": {"status": "ok", "policy_hash": "...", "plan_hash": "...", "receipt_hash": "...", ...}  // sealed provenance receipt; see docs/governance.md
 }
 ```
 
