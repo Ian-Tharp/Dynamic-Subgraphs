@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from app.models import NodeKind
 from app.policy import ExecutionPolicy
@@ -73,7 +73,9 @@ def policy_from_env(env: Mapping[str, str]) -> ExecutionPolicy:
     """Build the host `ExecutionPolicy` from `DS_MCP_*` knobs (defaults otherwise)."""
 
     defaults = ExecutionPolicy()
-    ints = {
+    # Any: ExecutionPolicy now also has non-int fields (cost_model, catalog...),
+    # so mypy can't match a **dict[str, int] against every keyword.
+    ints: dict[str, Any] = {
         attr: _parse_int(env, knob, getattr(defaults, attr))
         for knob, attr in _POLICY_INT_KNOBS.items()
     }

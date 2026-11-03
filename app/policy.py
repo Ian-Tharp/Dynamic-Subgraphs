@@ -21,12 +21,17 @@ without a reverse import and there is no cycle.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from dataclasses import dataclass
-from typing import Any
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any
 
 from app.models.graph_spec import GraphBudget
 from app.models.node_kinds import NodeKind
+
+if TYPE_CHECKING:
+    from app.governance.catalog import SubgraphCatalog
+    from app.governance.cost import CostModel
 
 # Absolute nesting rail. Nested subgraphs may never exceed this regardless of
 # what a host or planner asks for. This is the single source of truth; the
@@ -61,13 +66,76 @@ class ExecutionPolicy:
     allowed_subagents: frozenset[str] | None = None
     allowed_node_kinds: frozenset[NodeKind] | None = None
 
+    # ----- plan-level governance (checked by the plan gate before compile) -----
+    # Every field below is OFF by default, so an unconfigured policy never
+    # denies a plan the validator accepts. See `app.governance.plan_gate`.
+
+    # Models a plan or a run may use (node `params.model` and the run's role
+    # models). None = no narrowing; frozenset() = no model may be used.
+    allowed_models: frozenset[str] | None = None
+    # Longest START->END chain of nodes a plan may have. None = unlimited.
+    max_plan_length: int | None = None
+    # Named tool classes, e.g. {"state_changing": {"create_follow_up_task"}}.
+    tool_classes: Mapping[str, frozenset[str]] = field(default_factory=dict, hash=False)
+    # Classes whose tools change external state. Tool output may not reach one
+    # of these tools unless a gate node sits on every path in between.
+    state_changing_classes: frozenset[str] = frozenset()
+    # Classes whose tools need a gate node on every path from START.
+    gate_required_classes: frozenset[str] = frozenset()
+    # Node kinds treated as state-changing too (e.g. emit_artifact).
+    state_changing_node_kinds: frozenset[NodeKind] = frozenset()
+    # Node kinds that count as a gate (human approval by default).
+    gate_node_kinds: frozenset[NodeKind] = frozenset({NodeKind.WAIT_FOR_EVENT})
+    # Pre-flight cost ceilings, checked against the plan's worst-case bound
+    # from `cost_model` before any node runs. None = no ceiling.
+    max_cost_usd: float | None = None
+    max_tokens: int | None = None
+    cost_model: CostModel | None = field(default=None, hash=False)
+    # Catalog mode: only plans that match an approved entry may run.
+    approved_catalog: SubgraphCatalog | None = field(default=None, hash=False)
+
     def __post_init__(self) -> None:
         # Coerce any iterable allow-set to frozenset so equality / hashing /
         # as_dict are stable even if a caller passes a plain set or list.
-        for name in ("allowed_tools", "allowed_subagents", "allowed_node_kinds"):
+        for name in (
+            "allowed_tools",
+            "allowed_subagents",
+            "allowed_node_kinds",
+            "allowed_models",
+        ):
             value = getattr(self, name)
             if value is not None and not isinstance(value, frozenset):
                 object.__setattr__(self, name, frozenset(value))
+        for name in (
+            "state_changing_classes",
+            "gate_required_classes",
+            "state_changing_node_kinds",
+            "gate_node_kinds",
+        ):
+            object.__setattr__(self, name, frozenset(getattr(self, name)))
+        object.__setattr__(
+            self,
+            "tool_classes",
+            MappingProxyType(
+                {str(k): frozenset(v) for k, v in dict(self.tool_classes).items()}
+            ),
+        )
+        # Fail closed on misconfiguration: a class the gate can't resolve would
+        # silently protect nothing.
+        unknown = (self.state_changing_classes | self.gate_required_classes) - set(
+            self.tool_classes
+        )
+        if unknown:
+            raise ValueError(
+                "ExecutionPolicy references tool classes with no entry in "
+                f"tool_classes: {sorted(unknown)}"
+            )
+        if self.max_plan_length is not None and self.max_plan_length < 1:
+            raise ValueError("ExecutionPolicy.max_plan_length must be >= 1")
+        if self.max_cost_usd is not None and self.max_cost_usd < 0:
+            raise ValueError("ExecutionPolicy.max_cost_usd must be >= 0")
+        if self.max_tokens is not None and self.max_tokens < 0:
+            raise ValueError("ExecutionPolicy.max_tokens must be >= 0")
         for name in (
             "max_nodes",
             "max_depth",
@@ -82,6 +150,48 @@ class ExecutionPolicy:
         # A host can soften the per-run depth cap below the rail, never above it.
         if self.max_depth > self.max_depth_ceiling:
             object.__setattr__(self, "max_depth", self.max_depth_ceiling)
+
+    def tools_in_classes(self, classes: Iterable[str]) -> frozenset[str]:
+        """Union of the tools in the named classes."""
+        out: frozenset[str] = frozenset()
+        for name in classes:
+            out |= self.tool_classes.get(name, frozenset())
+        return out
+
+    def as_dict(self) -> dict[str, Any]:
+        """JSON-safe, order-stable view; the input to the receipt's policy hash."""
+
+        def _set(value: Iterable[Any] | None) -> list[str] | None:
+            if value is None:
+                return None
+            return sorted(str(getattr(v, "value", v)) for v in value)
+
+        return {
+            "max_nodes": self.max_nodes,
+            "max_llm_calls": self.max_llm_calls,
+            "max_depth": self.max_depth,
+            "max_depth_ceiling": self.max_depth_ceiling,
+            "max_fanout": self.max_fanout,
+            "max_wall_seconds": self.max_wall_seconds,
+            "allowed_tools": _set(self.allowed_tools),
+            "allowed_subagents": _set(self.allowed_subagents),
+            "allowed_node_kinds": _set(self.allowed_node_kinds),
+            "allowed_models": _set(self.allowed_models),
+            "max_plan_length": self.max_plan_length,
+            "tool_classes": {
+                k: sorted(v) for k, v in sorted(self.tool_classes.items())
+            },
+            "state_changing_classes": _set(self.state_changing_classes),
+            "gate_required_classes": _set(self.gate_required_classes),
+            "state_changing_node_kinds": _set(self.state_changing_node_kinds),
+            "gate_node_kinds": _set(self.gate_node_kinds),
+            "max_cost_usd": self.max_cost_usd,
+            "max_tokens": self.max_tokens,
+            "cost_model": self.cost_model.as_dict() if self.cost_model else None,
+            "approved_catalog": (
+                self.approved_catalog.as_dict() if self.approved_catalog else None
+            ),
+        }
 
 
 @dataclass(frozen=True)

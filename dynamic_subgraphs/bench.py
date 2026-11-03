@@ -19,11 +19,13 @@ from __future__ import annotations
 import json
 import math
 import statistics
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from app.errors import DynamicSubgraphsError
+from app.governance.catalog import fill_spec as _fill_spec
 from app.models.graph_spec import GraphSpec
 from dynamic_subgraphs.engine import DynamicSubgraphs, EngineConfig, Model
 from dynamic_subgraphs.eval.types import EvalReference, Origin
@@ -31,6 +33,27 @@ from dynamic_subgraphs.recording import Recording
 from dynamic_subgraphs.types import Planner
 
 ARMS: tuple[str, ...] = ("invented", "routed", "authored")
+
+
+@dataclass(frozen=True)
+class BenchArm:
+    """One benchmark arm: a row label, its eval origin, and an optional planner.
+
+    The default arm set (``ARMS``) is one arm per origin. The main run splits
+    the dynamic arm into sub-arms that differ only in ``planner_model`` (A1 =
+    nano planner, A2 = stronger planner); both carry ``origin="invented"`` and
+    are told apart by ``name``. ``planner_model`` only matters for invented
+    arms — routed/authored arms run a fixed spec and never call the planner.
+    """
+
+    name: str
+    origin: Origin
+    planner_model: Model | None = None
+
+
+def default_arms() -> tuple[BenchArm, ...]:
+    """The legacy 3-arm set — one arm per origin, named after it."""
+    return tuple(BenchArm(name=a, origin=_origin(a)) for a in ARMS)
 
 
 class BenchIntegrityError(DynamicSubgraphsError, RuntimeError):
@@ -84,29 +107,16 @@ class BenchTask:
 # ---------------------------------------------------------------------------
 
 
-def _fill_value(value: Any, prompt: str) -> Any:
-    """Recursively replace the literal substring ``{prompt}`` in every string."""
-    if isinstance(value, str):
-        return value.replace("{prompt}", prompt)
-    if isinstance(value, dict):
-        return {k: _fill_value(v, prompt) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_fill_value(item, prompt) for item in value]
-    return value
-
-
 def fill_spec(spec: GraphSpec, prompt: str) -> GraphSpec:
     """Return a deep-copied ``GraphSpec`` with ``{prompt}`` substituted.
 
     Uses ``str.replace`` — never ``str.format`` — so user prompts containing
     braces, quotes, or backslashes are safe. Substitution walks every node's
     ``params`` dict recursively (instructions, tool args, any future nested
-    child_params). The original ``spec`` object is never mutated.
+    child_params). The original ``spec`` object is never mutated. Shared with
+    the approved-subgraph catalog (``app.governance.fill_spec``).
     """
-    copy = spec.model_copy(deep=True)
-    for node in copy.nodes:
-        node.params = _fill_value(node.params, prompt)
-    return copy
+    return _fill_spec(spec, prompt)
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +186,9 @@ class ArmRunRow:
     applicable_dimensions: list[str] = field(default_factory=list)
     structural_quality: float | None = None
     goal_score: float | None = None
+    # Planner model id for invented arms ("provider/model"); None for arms
+    # that never plan (routed/authored) or when the engine default was used.
+    planner_model: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +306,33 @@ def _pilot_stats(rows: list[ArmRunRow]) -> dict[str, Any]:
     }
 
 
+def _model_id(model: Model | None) -> str | None:
+    """Stable ``provider/model`` id for a row, or None."""
+    if model is None:
+        return None
+    return f"{model.provider}/{model.model}"
+
+
+def resolve_repeats(task: BenchTask, repeats: int | Mapping[str, int]) -> int:
+    """Repeats for one task: a uniform int, or a per-task_type mapping.
+
+    A mapping must cover every task_type in the pack — a missing type raises
+    instead of silently defaulting, so a typo can't under-power a stratum.
+    """
+    if isinstance(repeats, int):
+        n = repeats
+    else:
+        if task.task_type not in repeats:
+            raise ValueError(
+                f"no repeats configured for task_type {task.task_type!r} "
+                f"(task {task.task_id!r})"
+            )
+        n = repeats[task.task_type]
+    if n < 1:
+        raise ValueError(f"repeats must be >= 1, got {n} for {task.task_id!r}")
+    return n
+
+
 def _persist(report: BenchReport, runs_dir: Path) -> None:
     """Write ``bench.jsonl`` and ``report.json`` under ``runs_dir/bench/<bench_id>/``."""
     bench_dir = runs_dir / "bench" / report.bench_id
@@ -320,15 +360,27 @@ def _persist(report: BenchReport, runs_dir: Path) -> None:
 def run_benchmark(
     *,
     tasks: list[BenchTask],
-    repeats: int,
+    repeats: int | Mapping[str, int],
     runs_dir: Path | str,
     router_library: RouterLibrary,
     bench_id: str,
     planner: Planner = "llm",
     model: Model | None = None,
     planner_model: Model | None = None,
+    arms: Sequence[BenchArm] | None = None,
 ) -> BenchReport:
-    """Run all tasks across all three arms for ``repeats`` repetitions.
+    """Run all tasks across all arms for ``repeats`` repetitions.
+
+    ``repeats`` is either one int for every task or a mapping
+    ``task_type -> repeats`` (the main run sizes repeats per stratum).
+    ``arms`` defaults to the legacy 3-arm set (``default_arms()``); pass
+    explicit ``BenchArm``s to run several invented sub-arms with different
+    planner models in one paired run. An arm's ``planner_model`` overrides
+    the engine-level ``planner_model`` for that arm's runs.
+
+    Each row is appended to ``bench.jsonl`` as soon as it is produced, so a
+    crash mid-run keeps every completed row (``report.json`` is written at
+    the end).
 
     One pinned worker model is shared across ALL arms (spec §7). Arms:
     - ``"invented"``: live LLM planner plans per task (fixed_spec=None).
@@ -348,6 +400,14 @@ def run_benchmark(
     from dynamic_subgraphs.eval import DeterministicEvalGate
 
     runs_dir = Path(runs_dir)
+    arm_list = tuple(arms) if arms is not None else default_arms()
+    if not arm_list:
+        raise ValueError("arms must be non-empty")
+    names = [a.name for a in arm_list]
+    if len(set(names)) != len(names):
+        raise ValueError(f"arm names must be unique, got {names}")
+    # Validate repeats for every task before spending anything.
+    task_repeats = {t.task_id: resolve_repeats(t, repeats) for t in tasks}
 
     # Refuse a reused bench_id BEFORE spending any tokens: stale rows from a
     # prior attempt under the same id would mislead corpus readers.
@@ -371,101 +431,112 @@ def run_benchmark(
     )
 
     rows: list[ArmRunRow] = []
-
-    for task in tasks:
-        for arm in ARMS:
-            for repeat in range(repeats):
-                run_id = f"{bench_id}-{task.task_id}-{arm}-r{repeat}"
-
-                # Determine fixed_spec for routed/authored arms.
-                fixed: GraphSpec | None
-                if arm == "routed":
-                    fixed = fill_spec(router_library.route(task), task.prompt)
-                elif arm == "authored":
-                    fixed = fill_spec(router_library.single_fixed, task.prompt)
-                else:
-                    fixed = None
-
-                result = engine.run(
-                    task.prompt,
-                    run_id=run_id,
-                    record=Recording.evaluated(),
-                    fixed_spec=fixed,
-                    task_id=task.task_id,
-                    origin=_origin(arm),
-                    reference=task.reference,
+    bench_dir.mkdir(parents=True, exist_ok=True)
+    with (bench_dir / "bench.jsonl").open("w", encoding="utf-8") as partial:
+        for task in tasks:
+            for bench_arm in arm_list:
+                arm = bench_arm.name
+                arm_planner = (
+                    (bench_arm.planner_model or planner_model)
+                    if bench_arm.origin == "invented"
+                    else None
                 )
+                for repeat in range(task_repeats[task.task_id]):
+                    run_id = f"{bench_id}-{task.task_id}-{arm}-r{repeat}"
 
-                eval_result = result.eval
-                if eval_result is None and result.status == "ok":
-                    # Disjoint from the legit case below: the run succeeded
-                    # (and spent money) but the gate threw and the engine
-                    # swallowed+logged it. Booking this as quality-0 would
-                    # silently bias the verdict toward KILL.
-                    raise BenchIntegrityError(
-                        f"run {run_id!r} succeeded but produced no EvalResult — "
-                        "the gate failed on a successful run (see engine warning "
-                        "logs). Aborting: a decision-grade benchmark must not "
-                        "book infrastructure failures as quality-0 data."
-                    )
-                if eval_result is None:
-                    # Legit failure (plan/validation/compile/execution — any
-                    # non-ok status): synthesize a zero row.
-                    quality = 0.0
-                    floor_met = False
-                    vpktok: float | None = None
-                    cost_usd: float | None = result.cost
-                    planner_cost: float | None = None
-                    worker_cost: float | None = None
-                    node_count: int | None = (
-                        len(result.plan.nodes) if result.plan is not None else None
-                    )
-                    topo_sig: str | None = None
-                    applicable_dims: list[str] = []
-                    structural_q: float | None = None
-                    goal_s: float | None = None
-                else:
-                    quality = float(eval_result.quality)
-                    floor_met = bool(eval_result.quality_floor_met)
-                    vpktok = eval_result.value_per_ktok
-                    cost_usd = eval_result.cost_usd
-                    planner_cost = eval_result.planner_cost_usd
-                    worker_cost = eval_result.worker_cost_usd
-                    node_count = (
-                        eval_result.fingerprint.node_count
-                        if eval_result.fingerprint is not None
-                        else None
-                    )
-                    topo_sig = (
-                        eval_result.fingerprint.topology_signature
-                        if eval_result.fingerprint is not None
-                        else None
-                    )
-                    applicable_dims = list(eval_result.applicable_dimensions)
-                    structural_q, goal_s = _headlines(eval_result)
+                    # Determine fixed_spec for routed/authored arms.
+                    fixed: GraphSpec | None
+                    if bench_arm.origin == "routed":
+                        fixed = fill_spec(router_library.route(task), task.prompt)
+                    elif bench_arm.origin == "authored":
+                        fixed = fill_spec(router_library.single_fixed, task.prompt)
+                    else:
+                        fixed = None
 
-                row = ArmRunRow(
-                    bench_id=bench_id,
-                    task_id=task.task_id,
-                    task_type=task.task_type,
-                    arm=arm,
-                    repeat=repeat,
-                    run_id=run_id,
-                    status=str(result.status),
-                    quality=quality,
-                    quality_floor_met=floor_met,
-                    value_per_ktok=vpktok,
-                    cost_usd=cost_usd,
-                    planner_cost_usd=planner_cost,
-                    worker_cost_usd=worker_cost,
-                    total_tokens=result.usage.total_tokens,
-                    node_count=node_count,
-                    topology_signature=topo_sig,
-                    applicable_dimensions=applicable_dims,
-                    structural_quality=structural_q,
-                    goal_score=goal_s,
-                )
-                rows.append(row)
+                    result = engine.run(
+                        task.prompt,
+                        run_id=run_id,
+                        record=Recording.evaluated(),
+                        fixed_spec=fixed,
+                        task_id=task.task_id,
+                        origin=bench_arm.origin,
+                        reference=task.reference,
+                        planner_model=arm_planner,
+                    )
+
+                    eval_result = result.eval
+                    if eval_result is None and result.status == "ok":
+                        # Disjoint from the legit case below: the run succeeded
+                        # (and spent money) but the gate threw and the engine
+                        # swallowed+logged it. Booking this as quality-0 would
+                        # silently bias the verdict toward KILL.
+                        raise BenchIntegrityError(
+                            f"run {run_id!r} succeeded but produced no EvalResult — "
+                            "the gate failed on a successful run (see engine warning "
+                            "logs). Aborting: a decision-grade benchmark must not "
+                            "book infrastructure failures as quality-0 data."
+                        )
+                    if eval_result is None:
+                        # Legit failure (plan/validation/compile/execution — any
+                        # non-ok status): synthesize a zero row.
+                        quality = 0.0
+                        floor_met = False
+                        vpktok: float | None = None
+                        cost_usd: float | None = result.cost
+                        planner_cost: float | None = None
+                        worker_cost: float | None = None
+                        node_count: int | None = (
+                            len(result.plan.nodes) if result.plan is not None else None
+                        )
+                        topo_sig: str | None = None
+                        applicable_dims: list[str] = []
+                        structural_q: float | None = None
+                        goal_s: float | None = None
+                    else:
+                        quality = float(eval_result.quality)
+                        floor_met = bool(eval_result.quality_floor_met)
+                        vpktok = eval_result.value_per_ktok
+                        cost_usd = eval_result.cost_usd
+                        planner_cost = eval_result.planner_cost_usd
+                        worker_cost = eval_result.worker_cost_usd
+                        node_count = (
+                            eval_result.fingerprint.node_count
+                            if eval_result.fingerprint is not None
+                            else None
+                        )
+                        topo_sig = (
+                            eval_result.fingerprint.topology_signature
+                            if eval_result.fingerprint is not None
+                            else None
+                        )
+                        applicable_dims = list(eval_result.applicable_dimensions)
+                        structural_q, goal_s = _headlines(eval_result)
+
+                    row = ArmRunRow(
+                        bench_id=bench_id,
+                        task_id=task.task_id,
+                        task_type=task.task_type,
+                        arm=arm,
+                        repeat=repeat,
+                        run_id=run_id,
+                        status=str(result.status),
+                        quality=quality,
+                        quality_floor_met=floor_met,
+                        value_per_ktok=vpktok,
+                        cost_usd=cost_usd,
+                        planner_cost_usd=planner_cost,
+                        worker_cost_usd=worker_cost,
+                        total_tokens=result.usage.total_tokens,
+                        node_count=node_count,
+                        topology_signature=topo_sig,
+                        applicable_dimensions=applicable_dims,
+                        structural_quality=structural_q,
+                        goal_score=goal_s,
+                        planner_model=_model_id(arm_planner),
+                    )
+                    rows.append(row)
+                    partial.write(json.dumps(asdict(row)) + "\n")
+                    partial.flush()
 
     pilot = _pilot_stats(rows)
     report = BenchReport(

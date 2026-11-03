@@ -305,6 +305,17 @@ def make_child_launcher(
             # grant itself a larger budget than the host (the parent's remaining LLM
             # allowance is already folded into spec.budget above).
             validated = validate_graph_spec(spec, registry, policy=policy)
+            if policy is not None:
+                # The plan gate covers nested plans too (structure,
+                # capabilities, data flow, catalog). Cost is bounded at the
+                # root and enforced for children by the shared ledger.
+                from app.governance import enforce_plan_policy
+
+                enforce_plan_policy(
+                    validated,
+                    policy,
+                    gates=("structure", "capabilities", "data_flow", "catalog"),
+                )
             if any(node.kind == NodeKind.WAIT_FOR_EVENT for node in validated.nodes):
                 raise SubgraphContainsWaitForEvent(
                     f"child subgraph {run_id!r} contains a wait_for_event node; "

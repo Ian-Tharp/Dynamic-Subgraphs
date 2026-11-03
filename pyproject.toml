@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dynamic-subgraphs"
-version = "0.5.0"
+version = "0.6.0"
 description = "A governed dynamic-graph runtime: a stable Supervisor plans, validates, and runs transient LangGraph workflows from a bounded node registry."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -134,6 +134,7 @@ files = [
     "app/policy.py",
     "app/models",
     "app/registry",
+    "app/governance",
     "app/mcp",
 ]
 
@@ -146,9 +147,9 @@ module = ["app.*"]
 disallow_untyped_defs = false
 
 # Incrementally bringing app under strict typing — models, registry, and the
-# host-governance module (app.policy) are clean.
+# host-governance modules (app.policy, app.governance) are clean.
 [[tool.mypy.overrides]]
-module = ["app.models.*", "app.registry.*", "app.policy"]
+module = ["app.models.*", "app.registry.*", "app.policy", "app.governance", "app.governance.*"]
 strict = true
 
 [tool.coverage.run]

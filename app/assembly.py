@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
+from app.governance import CatalogPlanner, CostModel
 from app.models import DynamicRunState, GraphSpec, NodeKind
 from app.policy import ExecutionPolicy
 from app.recording import Recorder
@@ -166,9 +167,13 @@ def _build_planner(
     model_providers: ProviderRegistry,
     chat_callbacks: list[Any] | None = None,
     planner_guidance: str | None = None,
+    policy: ExecutionPolicy | None = None,
 ) -> Planner:
     if config.fixed_spec is not None:
         return StaticPlanner(config.fixed_spec)
+    if policy is not None and policy.approved_catalog is not None:
+        # Catalog mode: select an approved subgraph, never synthesize one.
+        return CatalogPlanner(policy.approved_catalog)
     if config.planner == "llm":
         ref = _attach_callbacks(config.planner_ref, chat_callbacks)
         provider = model_providers.get(ref.provider)
@@ -232,6 +237,7 @@ def build_supervisor(
     policy: ExecutionPolicy | None = None,
     max_plan_attempts: int = 1,
     planner_guidance: str | None = None,
+    cost_model: CostModel | None = None,
 ) -> Supervisor:
     """Construct a Supervisor wired for `config`.
 
@@ -243,10 +249,17 @@ def build_supervisor(
     callback to capture token counts). `policy` is the host-owned
     `ExecutionPolicy` enforced at validation — for the root run **and** every
     nested `spawn_subgraph` child — so a planner can never grant itself a larger
-    budget than the host allows.
+    budget than the host allows. `cost_model` prices plans for the cost gate
+    (default: `policy.cost_model`); unset model routing is filled from this
+    run's role models. The policy itself is never rewritten, so receipts hash
+    the policy exactly as the host configured it.
     """
 
     effective_policy = policy or ExecutionPolicy()
+    effective_cost_model = with_cost_defaults(
+        cost_model or effective_policy.cost_model, config
+    )
+    run_models = run_model_names(config)
 
     runs_dir = str(getattr(recorder, "root_dir", "runs"))
     providers = model_providers or default_model_providers()
@@ -255,6 +268,7 @@ def build_supervisor(
         model_providers=providers,
         chat_callbacks=chat_callbacks,
         planner_guidance=planner_guidance,
+        policy=effective_policy,
     )
     runners = _build_runners(
         config,
@@ -281,8 +295,15 @@ def build_supervisor(
         # An LLM planner's runtime planning call is a real model call and
         # must be charged against the parent's LLM budget; mock/static
         # planners (and fixed_spec runs) are token-free.
+        # A catalog planner with the default keyword selector is token-free;
+        # a custom selector may call a model, so it is charged.
         planner_counts_as_llm_call=(
-            config.planner == "llm" and config.fixed_spec is None
+            config.planner == "llm"
+            and config.fixed_spec is None
+            and (
+                effective_policy.approved_catalog is None
+                or effective_policy.approved_catalog.selector is not None
+            )
         ),
     )
     runners[NodeKind.SPAWN_SUBGRAPH] = build_spawn_subgraph_runner(
@@ -305,4 +326,41 @@ def build_supervisor(
         recorder=recorder,
         policy=effective_policy,
         max_plan_attempts=max_plan_attempts,
+        run_models=run_models,
+        cost_model=effective_cost_model,
+    )
+
+
+def run_model_names(config: RunConfig) -> tuple[str, ...]:
+    """Model names a run is configured to call (empty on the token-free mock path)."""
+    if config.planner == "mock":
+        return ()
+    refs = [
+        config.worker_ref,
+        config.reducer_ref,
+        config.subagent_ref,
+        config.judge_ref,
+    ]
+    if config.fixed_spec is None:
+        refs.append(config.planner_ref)
+    return tuple(sorted({r.model for r in refs}))
+
+
+def with_cost_defaults(
+    cost_model: CostModel | None, config: RunConfig
+) -> CostModel | None:
+    """Route a cost model's unset node kinds to this run's role models.
+
+    Explicit `CostModel` routing wins; this only fills gaps so a host can give
+    just a price table. No-op without a cost model or on the mock path.
+    """
+    if cost_model is None or config.planner == "mock":
+        return cost_model
+    return cost_model.with_role_defaults(
+        default_model=config.worker_ref.model,
+        kind_models={
+            NodeKind.REDUCE: config.reducer_ref.model,
+            NodeKind.SPAWN_SUBAGENT: config.subagent_ref.model,
+        },
+        extra_models=(config.planner_ref.model, config.judge_ref.model),
     )

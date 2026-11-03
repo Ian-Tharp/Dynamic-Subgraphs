@@ -53,6 +53,11 @@ def run_result_payload(result: SupervisorResult) -> dict[str, Any]:
         "record_dir": record_dir,
         "artifacts": artifacts,
         "links": run_links(result.run_id),
+        "receipt": (
+            result.receipt.model_dump(mode="json")
+            if getattr(result, "receipt", None) is not None
+            else None
+        ),
     }
 
 

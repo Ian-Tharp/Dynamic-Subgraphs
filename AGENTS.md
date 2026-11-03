@@ -18,6 +18,7 @@ This repo implements a **governed dynamic graph runtime**: a stable supervisor o
 |---------|------|
 | `app/models/` | GraphSpec, run state, trace types |
 | `app/registry/` | Allowed node kinds and param schemas |
+| `app/governance/` | Plan policy gate, pre-flight cost bound, approved catalog, provenance receipts (pure; see `docs/governance.md`) |
 | `app/compiler/` | GraphSpec → LangGraph compile |
 | `app/runtime/` | Execute compiled graphs; node wrappers |
 | `app/supervisor/` | Durable host graph: plan → validate → run → record |
@@ -42,5 +43,5 @@ This repo implements a **governed dynamic graph runtime**: a stable supervisor o
 4. Supervisor graph  
 5. Planner (structured LLM output)  
 6. API `POST /runs` ✅ (full supervisor surface; see `docs/api.md`)  
-7. Eval / policy gates on side effects
+7. Eval / policy gates on side effects — plan-level gate, cost bound, catalog, receipts ✅ (`docs/governance.md`)  
 8. MCP server (`python -m app.mcp`) ✅ (governed runs for MCP hosts; see `docs/mcp.md`)  

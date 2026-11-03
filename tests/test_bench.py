@@ -490,3 +490,148 @@ def test_prompt_visibility_on_real_runner_path(tmp_path: Path) -> None:
         f"First message contents: "
         f"{[getattr(m, 'content', repr(m))[:120] for m in (captured_messages[0] if captured_messages else [])]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Main-run harness extensions: sub-arms, per-type repeats, incremental rows
+# ---------------------------------------------------------------------------
+
+
+def test_invented_sub_arms_carry_their_planner_model(tmp_path: Path) -> None:
+    """A1/A2 sub-arms both run as origin=invented, each with its own planner."""
+    from dynamic_subgraphs import BenchArm
+
+    lib = RouterLibrary.from_dir(_LIBRARY_DIR, _SINGLE_FIXED)
+    task = BenchTask(
+        task_id="t-sub",
+        task_type="compare",
+        prompt="Compare tea and coffee.",
+        reference=_ref(["tea"]),
+    )
+    nano = Model("openai", "nano-x")
+    strong = Model("openai", "strong-y")
+    arms = [
+        BenchArm("invented-a1", "invented", nano),
+        BenchArm("invented-a2", "invented", strong),
+        BenchArm("routed", "routed", strong),  # ignored: routed never plans
+    ]
+
+    seen: list[tuple[str, Any, Any]] = []
+    real_run = DynamicSubgraphs.run
+
+    def _spy(self: DynamicSubgraphs, prompt: str, **kwargs: Any) -> Any:
+        seen.append((kwargs["run_id"], kwargs["origin"], kwargs["planner_model"]))
+        return real_run(self, prompt, **kwargs)
+
+    with patch.object(DynamicSubgraphs, "run", _spy):
+        report = run_benchmark(
+            tasks=[task],
+            repeats=2,
+            runs_dir=tmp_path,
+            router_library=lib,
+            bench_id="test-sub",
+            planner="mock",
+            arms=arms,
+        )
+
+    assert [r.arm for r in report.rows] == [
+        "invented-a1",
+        "invented-a1",
+        "invented-a2",
+        "invented-a2",
+        "routed",
+        "routed",
+    ]
+    by_arm = {r.arm: r.planner_model for r in report.rows}
+    assert by_arm == {
+        "invented-a1": "openai/nano-x",
+        "invented-a2": "openai/strong-y",
+        "routed": None,
+    }
+    assert ("test-sub-t-sub-invented-a2-r1", "invented", strong) in seen
+    assert all(pm is None for rid, _, pm in seen if "-routed-" in rid)
+
+
+def test_repeats_by_task_type(tmp_path: Path) -> None:
+    lib = RouterLibrary.from_dir(_LIBRARY_DIR, _SINGLE_FIXED)
+    tasks = [
+        BenchTask("t-c", "compare", "Compare A and B.", _ref(["a"])),
+        BenchTask("t-s", "summarize", "Summarize: the cat sat.", _ref(["cat"])),
+    ]
+    report = run_benchmark(
+        tasks=tasks,
+        repeats={"compare": 3, "summarize": 1},
+        runs_dir=tmp_path,
+        router_library=lib,
+        bench_id="test-per-type",
+        planner="mock",
+    )
+    counts: dict[str, int] = {}
+    for r in report.rows:
+        counts[r.task_id] = counts.get(r.task_id, 0) + 1
+    assert counts == {"t-c": 3 * len(ARMS), "t-s": 1 * len(ARMS)}
+
+
+def test_missing_task_type_repeats_refused_before_any_run(tmp_path: Path) -> None:
+    lib = RouterLibrary.from_dir(_LIBRARY_DIR, _SINGLE_FIXED)
+    tasks = [BenchTask("t-x", "extract", "Extract: x=1.", _ref(["x"]))]
+    with (
+        patch.object(DynamicSubgraphs, "run", side_effect=AssertionError("ran")),
+        pytest.raises(ValueError, match="no repeats configured"),
+    ):
+        run_benchmark(
+            tasks=tasks,
+            repeats={"compare": 2},
+            runs_dir=tmp_path,
+            router_library=lib,
+            bench_id="test-missing-type",
+            planner="mock",
+        )
+
+
+def test_rows_survive_a_mid_run_crash(tmp_path: Path) -> None:
+    """Completed rows are on disk even if a later run raises."""
+    lib = RouterLibrary.from_dir(_LIBRARY_DIR, _SINGLE_FIXED)
+    task = BenchTask("t-crash", "summarize", "Summarize: sky.", _ref(["sky"]))
+    real_run = DynamicSubgraphs.run
+    calls = {"n": 0}
+
+    def _flaky(self: DynamicSubgraphs, prompt: str, **kwargs: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise RuntimeError("provider outage")
+        return real_run(self, prompt, **kwargs)
+
+    with (
+        patch.object(DynamicSubgraphs, "run", _flaky),
+        pytest.raises(RuntimeError, match="provider outage"),
+    ):
+        run_benchmark(
+            tasks=[task],
+            repeats=1,
+            runs_dir=tmp_path,
+            router_library=lib,
+            bench_id="test-crash",
+            planner="mock",
+        )
+
+    jsonl = tmp_path / "bench" / "test-crash" / "bench.jsonl"
+    lines = [ln for ln in jsonl.read_text("utf-8").splitlines() if ln.strip()]
+    assert len(lines) == 2
+    assert not (tmp_path / "bench" / "test-crash" / "report.json").exists()
+
+
+def test_duplicate_arm_names_refused(tmp_path: Path) -> None:
+    from dynamic_subgraphs import BenchArm
+
+    lib = RouterLibrary.from_dir(_LIBRARY_DIR, _SINGLE_FIXED)
+    with pytest.raises(ValueError, match="unique"):
+        run_benchmark(
+            tasks=[BenchTask("t", "compare", "Compare.", _ref(["a"]))],
+            repeats=1,
+            runs_dir=tmp_path,
+            router_library=lib,
+            bench_id="test-dup",
+            planner="mock",
+            arms=[BenchArm("x", "invented"), BenchArm("x", "routed")],
+        )

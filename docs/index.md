@@ -7,6 +7,7 @@
 ## Using the SDK
 
 - [`recipes.md`](./recipes.md) — task-oriented recipes (policy, plan-repair, recording, per-role models) with tested-model and latency tables.
+- [`governance.md`](./governance.md) — plan-level policy gate, pre-flight cost bound, approved-subgraph catalog mode, and provenance receipts.
 - [`api-stability.md`](./api-stability.md) — the public-API definition and the project's change/deprecation policy.
 - [`api.md`](./api.md) — the optional HTTP surface over the supervisor.
 - [`mcp.md`](./mcp.md) — the optional MCP server: governed runs as tools for MCP hosts.

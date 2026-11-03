@@ -22,6 +22,68 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
 - The run-config sidecar helpers moved to `app.recording.run_config` so the MCP
   server can share them without importing FastAPI. `app.api.run_config_store`
   re-exports them.
+- **Plan-level policy gate** (`app.governance`, re-exported as
+  `dynamic_subgraphs.governance`). `check_plan_policy(spec, policy)` is a pure
+  check of a whole `GraphSpec` against the host `ExecutionPolicy` before it
+  compiles. It covers node count, longest START→END chain, nesting depth,
+  allowed node kinds/tools/subagents/models, and forbidden data flow (tool
+  output reaching a state-changing tool or node without a gate node; tools in
+  gate-required classes without a gate on every path from START). It fails
+  closed and returns structured `PolicyViolation`s. The supervisor runs it
+  after registry validation on root runs, replays, and nested
+  `spawn_subgraph`/`gauntlet` child plans. A refused plan ends with the new
+  **`policy_denied`** status, or goes back to the planner when a re-plan could
+  fix it. Gate decisions are written to the trace as `policy_decision` events.
+- **Pre-flight cost bound.** `estimate_plan_cost` computes worst-case tokens and
+  USD for a plan from a static `CostModel` (per-model `ModelPrice` table +
+  per-call `TokenCap`s; no network calls). The gate refuses plans whose bound
+  exceeds `ExecutionPolicy.max_cost_usd` / `max_tokens` before any node runs. A
+  dollar ceiling with no cost model, or an unpriced model, fails closed.
+  `EngineConfig.pricing` is used as the price table when the policy has none.
+- **Approved-subgraph catalog mode.** `ExecutionPolicy(approved_catalog=
+  SubgraphCatalog(...))` limits execution to reviewed GraphSpec templates
+  (`{prompt}` slots, content-hashed). The SDK then plans with `CatalogPlanner`,
+  which selects an entry and never writes a new plan. The selector is a
+  token-free keyword selector by default, or `build_llm_catalog_selector`. The
+  gate refuses any plan that does not match an entry, including fixed specs,
+  replays and child plans.
+- **Provenance receipts.** Every `Supervisor.run`/`replay` and SDK `run()` —
+  including refused, failed and `engine_failed` runs — returns a sealed
+  `ProvenanceReceipt` (`RunResult.receipt`, `SupervisorResult.receipt`). It
+  holds the policy hash, plan hash, catalog entry, gate decisions, cost bound vs
+  actual (`within_bound`), model ids, timestamps, recorder run id and trace
+  digest. It is written to `receipt.json` (new `Artifact.RECEIPT`).
+  `verify_receipt` detects edits to the receipt, `spec.json`, `trace.jsonl`,
+  logged gate decisions, `output.json` status, or the stored `receipt.json`,
+  and can check the receipt against a given policy.
+- New optional `ExecutionPolicy` fields (all off by default): `allowed_models`,
+  `max_plan_length`, `tool_classes`, `state_changing_classes`,
+  `gate_required_classes`, `state_changing_node_kinds`, `gate_node_kinds`,
+  `max_cost_usd`, `max_tokens`, `cost_model`, `approved_catalog`; plus
+  `ExecutionPolicy.as_dict()`.
+- The HTTP run-result payload carries the receipt as an optional `receipt`
+  field.
+- `docs/governance.md`.
+
+### Changed
+- Every run's trace now starts with one `policy_decision` event per plan gate
+  (five on a root run), so `trace.jsonl` has extra leading rows.
+- `dynamic_subgraphs.bench.fill_spec` now delegates to the shared
+  `app.governance.fill_spec` (same behavior).
+- `app.governance` is type-checked under `mypy --strict`.
+
+OpenTelemetry GenAI attributes were not added: the recorder has no span concept
+yet (it writes a flat event list).
+
+## [0.6.0] — 2026-11-03
+
+### Changed
+- **BREAKING:** `DynamicSubgraphs.run()` now returns a failed `RunResult` with
+  `status == "engine_failed"` when provider or model construction fails instead
+  of raising the construction exception. Callers that caught those exceptions
+  should inspect the result's status and errors instead.
+
+### Added
 - **`gauntlet` node kind.** A builder/critic loop against a concrete reference,
   run inside one node so the outer graph stays a DAG (`app/runtime/gauntlet.py`).
   Each round plans and runs a builder child through the same `ChildLauncher`
@@ -121,6 +183,17 @@ error-reporting behaviors the docs promise are now actually enforced.
 - `FileRecorder.record_failure(...)` / `NullRecorder.record_failure(...)` —
   pre-execution failure records (selection-aware).
 - SDK `RunStatus` gains `"engine_failed"`.
+- **Benchmark main-run readiness** (frozen rule in
+  `docs/evals/bench-dynamic-vs-fixed-2026-06.md` §4, unchanged):
+  `BenchArm` (public) + `run_benchmark(arms=...)` run several invented
+  sub-arms (A1 nano planner / A2 stronger planner) in one paired run;
+  `repeats` accepts a `task_type -> int` mapping; `ArmRunRow.planner_model`;
+  `bench.jsonl` rows are appended as produced (crash-safe). New 24-task
+  stratified pack `docs/evals/bench-tasks-main-v1.jsonl` (incl. the
+  topology-eliciting `synthesize` stratum), pinned config
+  `docs/evals/bench-main-v1.config.json`, and the internal one-command runner
+  `python -m dynamic_subgraphs._bench_main` (`--estimate` / `--dry-run` /
+  `--live`). Runbook: `docs/evals/bench-main-run-v1.md`.
 
 ## [0.5.0] — 2026-06-11
 

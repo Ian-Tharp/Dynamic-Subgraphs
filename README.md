@@ -350,6 +350,32 @@ permissive-but-bounded, so a typical plan is unaffected.
 > ~20–30B) frequently produce invalid plans and fail. Run small/local models
 > as the `worker_model` with a stronger `planner_model`.
 
+### Plan-level governance: gate, cost bound, catalog, receipt
+
+On top of the budgets above, the host can check the **whole plan** before it
+compiles, cap its **worst-case dollar cost** before any node runs, restrict
+runs to **pre-approved subgraphs**, and get a **verifiable receipt** for every
+run:
+
+```python
+from dynamic_subgraphs import CostModel, ExecutionPolicy, ModelPrice, verify_receipt
+
+policy = ExecutionPolicy(
+    allowed_models=frozenset({"gpt-5.4-nano"}),
+    tool_classes={"state_changing": frozenset({"create_follow_up_task"})},
+    state_changing_classes=frozenset({"state_changing"}),  # needs a gate node upstream
+    max_cost_usd=0.05,
+    cost_model=CostModel(prices={"gpt-5.4-nano": ModelPrice(0.20, 1.25)}),
+    # approved_catalog=SubgraphCatalog(...)  # governed routing: select, never synthesize
+)
+r = engine.run("...")
+r.status                # "policy_denied" if the plan breaks a rule or the budget
+r.receipt.cost_bound    # worst case, next to r.receipt.cost_actual
+verify_receipt(r.receipt, f"runs/{r.receipt.recorder_run_id}", policy=policy).ok
+```
+
+See [`docs/governance.md`](./docs/governance.md).
+
 ### Recording (opt-in)
 
 By default the engine writes **no files** — embedding it never clutters your
@@ -405,6 +431,7 @@ result = engine.run(
 - [`docs/recipes.md`](./docs/recipes.md) — copy-pasteable SDK patterns (local models, hybrid, recording presets, debugging) + tested-model and latency tables.
 - [`docs/api-stability.md`](./docs/api-stability.md) — API stability & change policy: what counts as public, SemVer, deprecation, and how we keep changes non-breaking.
 - [`docs/evals/`](./docs/evals/) — eval reports (e.g. the gpt-5.4-nano vs claude-haiku-4-5 e2e comparison: latency / tokens / cost / quality, traced via LangSmith).
+- [`docs/governance.md`](./docs/governance.md) — plan policy gate, pre-flight cost bound, approved-subgraph catalog, provenance receipts.
 - [`docs/api.md`](./docs/api.md) — the HTTP surface over the supervisor (endpoints, modes, auth, examples).
 - [`docs/mcp.md`](./docs/mcp.md) — the MCP server: hand tasks from Claude, IDEs, or other agents to governed, recorded runs.
 - [`docs/dynamic-graphs-canonical-design-v1.md`](./docs/dynamic-graphs-canonical-design-v1.md) — canonical project design and source of truth.
