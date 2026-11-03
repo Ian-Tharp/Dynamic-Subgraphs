@@ -126,7 +126,7 @@ no_implicit_optional = true
 # the governance/data modules under strict typing. CI, pre-commit, and the local
 # `uv run mypy` all share this set, so strictness can't drift between config and
 # command line.
-files = ["dynamic_subgraphs", "app/policy.py", "app/models", "app/registry"]
+files = ["dynamic_subgraphs", "app/policy.py", "app/models", "app/registry", "app/governance"]
 
 [[tool.mypy.overrides]]
 module = "dynamic_subgraphs.*"
@@ -137,9 +137,9 @@ module = ["app.*"]
 disallow_untyped_defs = false
 
 # Incrementally bringing app under strict typing — models, registry, and the
-# host-governance module (app.policy) are clean.
+# host-governance modules (app.policy, app.governance) are clean.
 [[tool.mypy.overrides]]
-module = ["app.models.*", "app.registry.*", "app.policy"]
+module = ["app.models.*", "app.registry.*", "app.policy", "app.governance", "app.governance.*"]
 strict = true
 
 [tool.coverage.run]
