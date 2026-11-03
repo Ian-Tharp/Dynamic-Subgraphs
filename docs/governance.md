@@ -106,8 +106,13 @@ and **per-call token caps**. It makes no network calls and no model calls.
 
 The runtime ledger already refuses LLM call *N+1* past the effective
 `max_llm_calls`, so the bound keeps only the `max_llm_calls` most expensive
-calls. Each call is priced at its node's `params.model`, else the cost model's
-per-kind model, else its `default_model`, using the call's token cap.
+calls. Each call is priced at the model the runner actually calls: the cost
+model's per-kind model (`kind_models`), else its `default_model`, using the
+call's token cap. The built-in runners ignore a node's planner-written
+`params.model`, so a pin never lowers a call's price: when the pinned model
+costs more, that price is used instead, and an unpriced pin leaves the call
+unpriced (fail closed). With no routed model for a kind, the call is unpriced
+even if the pin has a price.
 
 ```python
 from dynamic_subgraphs import CostModel, ExecutionPolicy, ModelPrice, TokenCap
@@ -182,8 +187,9 @@ answer with a catalog id; any other answer fails the run as `plan_failed`.
 
 ## 4. Provenance receipt
 
-Every `Supervisor.run` / `Supervisor.replay`, and every SDK `run()` (including
-`policy_denied`, failed and `engine_failed` runs), returns a `ProvenanceReceipt`.
+Every `Supervisor.run` / `Supervisor.replay` / `Supervisor.resume`, and every
+SDK `run()` (including `policy_denied`, failed and `engine_failed` runs),
+returns a `ProvenanceReceipt`.
 You get it as `RunResult.receipt` and `SupervisorResult.receipt`. When the run
 is recorded, it's also written to `runs/<run_id>/receipt.json`
 (`Artifact.RECEIPT`).
@@ -236,12 +242,24 @@ The recorder has no span concept today (it writes a flat `TraceEvent` list), so
 receipts don't emit OpenTelemetry GenAI attributes. If span export is added
 later, the receipt fields map directly onto span attributes.
 
+### Resume (human approval)
+
+`Supervisor.resume(run_id, event=...)` re-runs the plan gate on the recorded
+spec under the **current** policy before it continues. If the host tightened
+its policy while the run waited, the resume ends as `policy_denied` (stage
+`resume_policy_gate`); nothing new is recorded, so the paused run directory
+and its `receipt.json` stay as they were and still verify. Otherwise the gate's
+`policy_decision` events are written back at the head of the resumed trace
+(they live on the trace, not in checkpointed state), the run directory is
+rewritten, and a fresh receipt replaces `receipt.json`. It verifies against the
+rewritten directory, keeps the paused run's `started_at`, and counts the LLM
+calls from before and after the pause.
+
 ## Known limits
 
 - Data flow is checked inside one graph. A parent's tool output passed to a
   child through `inputs_from` isn't traced across the boundary, but the child's
   own plan is still gated.
-- `Supervisor.resume` continues a paused run under the plan the gate already
-  approved. It doesn't re-run the gate and doesn't return a new receipt.
 - Node `params.model` is checked by policy, but the built-in LLM runners use the
-  run's role model. A pinned model only affects the gate and the cost bound.
+  run's role model. A pinned model can only make the gate stricter: it must be
+  in `allowed_models`, and it can raise the cost bound but never lower it.
