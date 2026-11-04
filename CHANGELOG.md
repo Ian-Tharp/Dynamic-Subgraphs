@@ -8,6 +8,21 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
 ## [Unreleased]
 
 ### Added
+- **MCP server (`python -m app.mcp`, new `mcp` extra).** Exposes governed
+  subgraph runs to MCP hosts over stdio or streamable HTTP. Tools:
+  `run_subgraph`, `resume_run`, `replay_run`, `server_info`,
+  `describe_registry`, `list_runs`, `get_run`, `get_run_file`, `get_artifact`;
+  resources `ds://server`, `ds://registry`, `ds://runs/{run_id}/{name}`. The
+  host `ExecutionPolicy` comes from `DS_MCP_*` variables and a caller can only
+  narrow it per run; the LLM planner is refused unless the server runs with
+  `DS_PLANNER=llm`; models must be allowlisted; every run is recorded; client
+  run ids can't overwrite existing runs; bad config fails at startup. The rules
+  live in `GovernedRunService` (no MCP import), so they're tested without the
+  SDK. Run/resume/replay results carry the run's provenance `receipt`, and
+  `get_run_file` can read `receipt`. See `docs/mcp.md`.
+- The run-config sidecar helpers moved to `app.recording.run_config` so the MCP
+  server can share them without importing FastAPI. `app.api.run_config_store`
+  re-exports them.
 - **Plan-level policy gate** (`app.governance`, re-exported as
   `dynamic_subgraphs.governance`). `check_plan_policy(spec, policy)` is a pure
   check of a whole `GraphSpec` against the host `ExecutionPolicy` before it
