@@ -69,6 +69,23 @@ def test_resume_completes_paused_run(tmp_path) -> None:
     assert resumed.json()["status"] == "ok"
 
 
+def test_resume_returns_a_receipt_that_verifies(tmp_path) -> None:
+    from app.governance import verify_receipt
+
+    client = _client(tmp_path)
+    client.post("/runs", json={"prompt": "go", "run_id": "wait-r", "mode": "sync"})
+
+    resumed = client.post(
+        "/runs/wait-r/resume",
+        json={"event": {"event_type": "human_input", "value": "hello"}},
+    )
+
+    receipt = resumed.json()["receipt"]
+    assert receipt is not None and receipt["status"] == "ok"
+    check = verify_receipt(receipt, tmp_path / "wait-r")
+    assert check.ok, check.problems
+
+
 def test_replay_creates_new_run(tmp_path) -> None:
     # Replay needs a completed run; use the default mock planner instead.
     app = create_app(ApiSettings.from_env({"DS_RUNS_DIR": str(tmp_path)}))

@@ -297,3 +297,87 @@ def test_explicit_cost_model_routing_wins_over_role_defaults() -> None:
     cm = with_cost_defaults(CostModel(prices=PRICES, default_model="cheap"), config)
 
     assert cm is not None and cm.default_model == "cheap"
+
+
+# ---------- a planner-pinned model can't lower the bound ----------
+#
+# The built-in runners ignore `params.model` and call the run's role model, so
+# a plan that pins a cheap model must still be priced at the (dearer) worker.
+
+PINNED_PRICES = {
+    "nano": ModelPrice(0.10, 0.10),
+    "big-worker": ModelPrice(15.0, 75.0),
+}
+BIG_PER_CALL = 8_000 / 1e6 * 15.0 + 2_000 / 1e6 * 75.0  # $0.27
+
+
+def test_pinned_cheap_model_is_priced_at_the_role_model(make_node, chain) -> None:
+    spec = chain(make_node("a", params={"instruction": "x", "model": "nano"}))
+    cm = CostModel(prices=PINNED_PRICES, default_model="big-worker")
+
+    bound = _bound(spec, cm)
+
+    assert bound.usd == pytest.approx(BIG_PER_CALL)
+    assert bound.calls[0].model == "big-worker"
+
+
+def test_pinned_cheap_model_cannot_slip_past_max_cost_usd(make_node, chain) -> None:
+    spec = chain(make_node("a", params={"instruction": "x", "model": "nano"}))
+    policy = ExecutionPolicy(
+        max_cost_usd=0.01,
+        cost_model=CostModel(prices=PINNED_PRICES, default_model="big-worker"),
+    )
+
+    report = check_plan_policy(spec, policy)
+
+    assert not report.allowed
+    assert {v.code for v in report.violations} == {"cost_bound_exceeded"}
+    assert report.cost_bound is not None
+    assert report.cost_bound.usd == pytest.approx(BIG_PER_CALL)
+
+
+def test_pinned_parallel_map_child_is_priced_at_the_role_model(
+    make_node, chain
+) -> None:
+    spec = chain(
+        make_node(
+            "seed",
+            NodeKind.TOOL_CALL,
+            outputs=["items"],
+            params={"tool_name": "web_search"},
+        ),
+        make_node(
+            "fan",
+            NodeKind.PARALLEL_MAP,
+            inputs=["items"],
+            params={
+                "over": "items",
+                "child_kind": "llm_call",
+                "child_params": {"instruction": "x", "model": "nano"},
+            },
+        ),
+    )
+    cm = CostModel(prices=PINNED_PRICES, default_model="big-worker")
+
+    assert _bound(spec, cm, fanout=3).usd == pytest.approx(3 * BIG_PER_CALL)
+
+
+def test_pin_is_ignored_without_role_routing(make_node, chain) -> None:
+    # No default_model: what runs is unknown, so a priced pin doesn't count.
+    spec = chain(make_node("a", params={"instruction": "x", "model": "nano"}))
+
+    bound = _bound(spec, CostModel(prices=PINNED_PRICES))
+
+    assert bound.usd is None
+    assert "<unspecified>" in bound.unpriced_models
+
+
+def test_sdk_routing_prices_the_worker_not_the_pin(make_node, chain) -> None:
+    from app.assembly import RunConfig, with_cost_defaults
+
+    spec = chain(make_node("a", params={"instruction": "x", "model": "nano"}))
+    config = RunConfig(planner="llm", model="big-worker", strict_runners=True)
+    cm = with_cost_defaults(CostModel(prices=PINNED_PRICES), config)
+    assert cm is not None
+
+    assert _bound(spec, cm).usd == pytest.approx(BIG_PER_CALL)

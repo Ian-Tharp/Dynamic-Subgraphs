@@ -67,7 +67,10 @@ are missing returns `503`.
 Run-result payloads for runs and replays include a
 `receipt` field: the provenance receipt described in
 [`governance.md`](./governance.md). A run refused by the plan policy gate
-reports `status: "policy_denied"`. Resume results carry `receipt: null` for now.
+reports `status: "policy_denied"`. Resume results carry a fresh receipt too: the
+plan gate is re-checked under the current policy (a refusal returns `409` with
+`status: "policy_denied"` and leaves the paused run untouched), and on success
+the receipt verifies against the rewritten run directory.
 
 `POST /chains` defaults to `decider="status"`: token-free, stop on `ok`, ask
 on `paused`, fail closed otherwise. Set `decider="llm"` to use the structured

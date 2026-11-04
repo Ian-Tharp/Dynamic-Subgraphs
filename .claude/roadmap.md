@@ -27,6 +27,7 @@
 | Judge truncation fix — `LlmIterationDecider` now sees up to 4000 chars per value (was 500), unblocks real-LLM evaluation | ✓ |
 | Chain-level recording (`FileRecorder.record_chain`, `load_chain`, `Supervisor.run_iteratively(record_chain=True)`) | ✓ |
 | `gauntlet` node kind — Shumer builder/critic loop inside one node: sealed blind A/B, one-gap briefs, stop on won / rounds / budget / deadline / repeated gap | ✓ |
+| MCP server (`app/mcp/`, `python -m app.mcp`) — governed runs as MCP tools; host policy from env, caller can only narrow; mock-only unless host enables LLM; always recorded | ✓ |
 
 ## Identified improvements (alignment with original intent)
 
@@ -100,6 +101,13 @@ flag on `LangGraphExecutor` would refuse to fall back to defaults
 for any kind the user hasn't explicitly wired, forcing production
 deployments to be explicit. Useful guard for the "we're using real
 LLMs now" phase the project is in.
+
+### MCP server follow-ups
+
+- Durable checkpointer (SQLite) so `resume_run` survives a server restart.
+- Async runs with MCP progress notifications for long LLM runs.
+- Auth for the streamable-HTTP transport (it binds to localhost today).
+- Optional `DeterministicEvalGate` scoring so every MCP run writes `eval.json`.
 
 ## Next candidate slices (ordered by leverage)
 
