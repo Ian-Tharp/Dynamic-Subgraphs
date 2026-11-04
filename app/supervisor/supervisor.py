@@ -65,7 +65,7 @@ class SupervisorResult:
     # run never produced a registry-valid plan).
     gate_report: PlanGateReport | None = None
     # Tamper-evident provenance receipt (see app.governance.receipt). Built for
-    # every run()/replay() outcome, including refused and failed runs.
+    # every run()/replay()/resume() outcome, including refused and failed runs.
     receipt: ProvenanceReceipt | None = None
 
 
@@ -569,12 +569,35 @@ class Supervisor:
     def resume(self, run_id: str, *, event: Any) -> SupervisorResult:
         """Resume a previously-paused run by feeding it the awaited event.
 
-        Loads the spec the recorder persisted on the original run, compiles
+        Loads the spec the recorder persisted on the original run, re-checks
+        it against the *current* plan policy (a host that tightened its policy
+        while the run waited for approval does not get it resumed), compiles
         it (state is restored from the executor's checkpointer), resumes
         execution with the event payload, and records the updated state
         (overwriting the previous run directory).
+
+        Like ``run``/``replay``, the result carries a fresh provenance receipt
+        that is written to ``receipt.json`` and verifies against the rewritten
+        run directory. The receipt keeps the original run's ``started_at``.
         """
 
+        started_at = self._original_started_at(run_id)
+        result = self._resume(run_id, event=event)
+        return self._with_receipt(result, started_at=started_at)
+
+    def _original_started_at(self, run_id: str) -> datetime:
+        """``started_at`` of the paused run's receipt, else now."""
+        loader = getattr(self._recorder, "load_receipt", None)
+        if loader is not None:
+            try:
+                stored = loader(run_id)
+                if stored and stored.get("started_at"):
+                    return ProvenanceReceipt.model_validate(stored).started_at
+            except Exception:
+                logger.debug("no usable receipt for %r", run_id, exc_info=True)
+        return datetime.now(UTC)
+
+    def _resume(self, run_id: str, *, event: Any) -> SupervisorResult:
         errors: list[dict] = []
 
         try:
@@ -597,6 +620,38 @@ class Supervisor:
                 result=None,
                 record=None,
                 errors=errors,
+            )
+
+        # Re-run the plan gate under the current policy (pure, no model call).
+        # A refusal leaves the paused recording and its receipt untouched: the
+        # refusal's receipt is returned but not persisted (no new record).
+        gate_report = check_plan_policy(
+            spec,
+            self._policy,
+            run_models=self._run_models,
+            cost_model=self._cost_model,
+        )
+        if not gate_report.allowed:
+            message = "; ".join(v.message for v in gate_report.violations)
+            return SupervisorResult(
+                run_id=run_id,
+                status=RunStatus.POLICY_DENIED,
+                response=(
+                    f"Resume refused: recorded spec for {run_id!r} is refused by "
+                    f"the current plan policy: {message}"
+                ),
+                validated_spec=None,
+                result=None,
+                record=None,
+                errors=[
+                    {
+                        "stage": "resume_policy_gate",
+                        "type": "PlanPolicyViolation",
+                        "message": message,
+                        "issues": [v.as_dict() for v in gate_report.violations],
+                    }
+                ],
+                gate_report=gate_report,
             )
 
         try:
@@ -653,6 +708,10 @@ class Supervisor:
 
         try:
             result = self._executor.resume(compiled, run_id=run_id, event=event)
+            # The gate's decisions live on the trace, not in checkpointed state,
+            # so the resumed trace lacks them: prepend them again, exactly as
+            # run()/replay() do, so trace.jsonl backs the receipt.
+            result.trace.events[:0] = policy_decision_events(gate_report)
         except Exception as exc:
             errors.append(
                 {
@@ -722,6 +781,7 @@ class Supervisor:
             result=result,
             record=record,
             errors=errors,
+            gate_report=gate_report,
         )
 
 

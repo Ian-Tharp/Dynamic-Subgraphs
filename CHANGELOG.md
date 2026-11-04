@@ -48,7 +48,7 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
   token-free keyword selector by default, or `build_llm_catalog_selector`. The
   gate refuses any plan that does not match an entry, including fixed specs,
   replays and child plans.
-- **Provenance receipts.** Every `Supervisor.run`/`replay` and SDK `run()` —
+- **Provenance receipts.** Every `Supervisor.run`/`replay`/`resume` and SDK `run()` —
   including refused, failed and `engine_failed` runs — returns a sealed
   `ProvenanceReceipt` (`RunResult.receipt`, `SupervisorResult.receipt`). It
   holds the policy hash, plan hash, catalog entry, gate decisions, cost bound vs
@@ -65,6 +65,20 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
 - The HTTP run-result payload carries the receipt as an optional `receipt`
   field.
 - `docs/governance.md`.
+
+### Fixed
+- **Cost bound: a pinned `params.model` can no longer lower the bound.** The
+  bound priced each LLM node at its planner-written `params.model`, but the
+  runners ignore it and call the run's role model. A plan pinned to a cheap
+  model was bounded at the cheap price and passed `max_cost_usd` while the real
+  worst case was far higher. Calls are now priced at the routed role model; a
+  dearer pin raises the price, an unpriced pin fails closed.
+- **Receipts across resume.** `Supervisor.resume` now re-runs the plan gate
+  under the current policy (refusing with `policy_denied` if it no longer
+  passes), writes the gate's `policy_decision` events back into the resumed
+  trace, and returns and persists a fresh receipt that verifies against the
+  rewritten run directory. Before, it returned no receipt and left a stale
+  `receipt.json` whose `trace_digest` and gate decisions no longer matched.
 
 ### Changed
 - Every run's trace now starts with one `policy_decision` event per plan gate

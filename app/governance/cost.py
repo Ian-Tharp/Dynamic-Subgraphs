@@ -8,6 +8,12 @@ most this plan can spend?":
 - ``llm_call`` / ``spawn_subagent`` / ``reduce(llm_summarize)``: one call each.
 - ``parallel_map`` with an ``llm_call`` child: up to the effective
   ``max_fanout`` calls.
+
+Each call is priced at the model the runner actually calls: the run's role
+model for that node kind (``kind_models`` / ``default_model``). A node's
+planner-written ``params.model`` is not honored by the runners, so it never
+lowers a call's price; it can only raise it (the dearer of the two is used),
+and an unpriced pin leaves the call unpriced (fail closed).
 - ``spawn_subgraph`` / ``gauntlet``: open-ended (the child is planned at run
   time), so the bound adds slack calls priced at the most expensive model in
   play, up to the effective ``max_llm_calls``.
@@ -89,7 +95,8 @@ class CostModel:
             ``{"input_per_1m": ..., "output_per_1m": ...}`` dict form. A model
             matches by exact name, then by the longest name that is a prefix
             (so ``gpt-5.4-nano`` prices ``gpt-5.4-nano-2026-03-17``).
-        default_model: the model a node without ``params.model`` runs on.
+        default_model: the role (worker) model LLM nodes run on. A node's
+            ``params.model`` does not change it (runners ignore the pin).
         kind_models: per-kind override of ``default_model`` (e.g. the reducer
             model for ``reduce``, the subagent model for ``spawn_subagent``).
         extra_models: other models the run can reach (planner, judge). They are
@@ -130,9 +137,17 @@ class CostModel:
     def cap_for(self, kind: NodeKind) -> TokenCap:
         return self.kind_caps.get(kind, self.default_cap)
 
-    def model_for(self, node_kind: NodeKind, declared: str | None) -> str | None:
-        if declared:
-            return declared
+    def model_for(self, node_kind: NodeKind, declared: str | None = None) -> str | None:
+        """The model a node of ``node_kind`` actually runs on: its role model.
+
+        ``declared`` (a node's planner-written ``params.model``) is ignored on
+        purpose. The built-in runners call the run's role model, not the pinned
+        one, so pricing the pin would let a planner lower the bound by naming a
+        cheap model. ``estimate_plan_cost`` still counts a pin as a candidate
+        when it costs *more* (see ``_estimate``), so a pin can only raise the
+        bound, never lower it.
+        """
+        del declared
         return self.kind_models.get(node_kind, self.default_model)
 
     def with_role_defaults(
@@ -241,20 +256,40 @@ def estimate_plan_cost(
     open_ended = False
     unpriced: set[str] = set()
 
-    def _estimate(node_id: str, kind: NodeKind, model: str | None) -> CallEstimate:
+    def _estimate(node_id: str, kind: NodeKind, declared: str | None) -> CallEstimate:
+        # Price the role model the runner will call. A planner-pinned model is
+        # not honored at run time, so it may only make the call dearer: it is
+        # an extra candidate, the costliest candidate wins, and an unpriced
+        # candidate (or no role model at all) leaves the call unpriced.
         cap = cost_model.cap_for(kind)
-        price = cost_model.price_for(model) if model else None
-        if price is None:
-            unpriced.add(model or "<unspecified>")
-        usd = price.cost(cap.input_tokens, cap.output_tokens) if price else None
-        return CallEstimate(node_id=node_id, model=model, tokens=cap.total, usd=usd)
+        routed = cost_model.model_for(kind)
+        if routed is None:
+            unpriced.add("<unspecified>")
+        candidates = [m for m in dict.fromkeys((routed, declared)) if m]
+        worst_model: str | None = routed
+        worst_usd: float | None = None
+        priced_all = routed is not None
+        for m in candidates:
+            price = cost_model.price_for(m)
+            if price is None:
+                unpriced.add(m)
+                priced_all = False
+                continue
+            usd = price.cost(cap.input_tokens, cap.output_tokens)
+            if worst_usd is None or usd > worst_usd:
+                worst_model, worst_usd = m, usd
+        return CallEstimate(
+            node_id=node_id,
+            model=worst_model,
+            tokens=cap.total,
+            usd=worst_usd if priced_all else None,
+        )
 
     for node in spec.nodes:
         count, declared, node_open = _llm_calls_for(node, max_fanout)
         open_ended = open_ended or node_open
         if count:
-            model = cost_model.model_for(node.kind, declared)
-            est = _estimate(node.id, node.kind, model)
+            est = _estimate(node.id, node.kind, declared)
             calls.extend([est] * count)
 
     if open_ended and max_llm_calls > 0:
