@@ -44,7 +44,13 @@ from typing import Any
 from langchain_core.callbacks import UsageMetadataCallbackHandler
 
 from app.assembly import RunConfig, build_supervisor
-from app.governance import CostModel, ProvenanceReceipt, build_receipt, policy_hash
+from app.governance import (
+    CostModel,
+    ProvenanceReceipt,
+    ReceiptLedger,
+    build_receipt,
+    policy_hash,
+)
 from app.models import GraphSpec
 from app.policy import ExecutionPolicy
 from app.recording import FileRecorder, NullRecorder
@@ -432,6 +438,10 @@ class EngineConfig:
     eval_gate: EvalGate | None = None
     # Default benchmark tags applied to every run; per-call run() kwargs win.
     eval_tags: EvalTags | None = None
+    # Optional append-only, hash-chained receipt ledger (None == OFF). Each
+    # recorded run's final receipt is anchored there, signed when the ledger
+    # has a signer: `ReceiptLedger.for_runs_dir("runs", signer=HmacSigner(...))`.
+    receipt_ledger: ReceiptLedger | None = None
 
     def model_selection(self) -> ModelSelection:
         """The per-role `ModelSelection` this config resolves to."""
@@ -496,6 +506,7 @@ class DynamicSubgraphs:
         self._pricing = config.pricing
         self._policy = config.policy
         self._cost_model = _pricing_cost_model(config.policy, config.pricing)
+        self._receipt_ledger = config.receipt_ledger
         self._max_plan_attempts = config.max_plan_attempts
         self._planner_guidance = config.planner_guidance
 
@@ -659,6 +670,9 @@ class DynamicSubgraphs:
                 models=usage.by_model.keys(),
             )
             supervisor.persist_receipt(receipt)
+            # Anchor only this final receipt (the supervisor has no ledger), so
+            # the ledger gets one entry per run rather than one per reseal.
+            self._anchor(receipt)
             result = replace(result, receipt=receipt)
         run_result = RunResult._from_supervisor(
             result,
@@ -680,6 +694,16 @@ class DynamicSubgraphs:
                 reference=reference,
             ),
         )
+
+    def _anchor(self, receipt: ProvenanceReceipt) -> None:
+        if self._receipt_ledger is None or receipt.recorder_run_id is None:
+            return
+        try:
+            self._receipt_ledger.append(receipt)
+        except Exception:  # anchoring never masks the run's outcome
+            logger.warning(
+                "failed to anchor receipt for %r", receipt.run_id, exc_info=True
+            )
 
     def _score(
         self,

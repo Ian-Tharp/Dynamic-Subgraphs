@@ -6,7 +6,8 @@ time. Dynamic Subgraphs governs the **plan**: the whole synthesized `GraphSpec`
 is checked against host policy **before it compiles**, its worst-case dollar
 cost is bounded **before any node runs**, execution can be restricted to a
 **catalog of pre-approved subgraphs**, and every run returns a **provenance
-receipt** that can be verified against the recorded log.
+receipt** that can be verified against the recorded log and anchored in a
+hash-chained, optionally signed **receipt ledger**.
 
 Everything here lives in `app/governance/` (re-exported from
 `dynamic_subgraphs.governance`). The checks are pure functions: no I/O, no
@@ -231,10 +232,104 @@ assert check.ok, check.problems
 Files the recording policy skipped are listed in `checked`; they aren't counted
 as problems.
 
-The receipt is integrity evidence, not a signature. Anyone who can rewrite both
-the recorder files and the receipt can recompute the hashes. For
-non-repudiation, store `receipt_hash` somewhere append-only, or sign it with
-your own key.
+On its own, the receipt is integrity evidence, not a signature: anyone who can
+rewrite both the recorder files and the receipt can recompute the hashes. The
+receipt ledger and signers below close that gap.
+
+### Receipt ledger
+
+`ReceiptLedger` is an append-only, hash-chained JSONL file. Every receipt the
+supervisor persists to `receipt.json` is also appended there as a
+`LedgerEntry`:
+
+| Field | Meaning |
+|-------|---------|
+| `seq` | 0-based position; contiguous |
+| `run_id` / `receipt_run_id` | the recorded run directory / the receipt's own `run_id` |
+| `status` / `receipt_hash` | the anchored receipt |
+| `supersedes` | the `receipt_hash` this one replaced for the same run (a resume replacing the paused receipt), else `null` |
+| `prev_entry_hash` | the previous line's `entry_hash` (`null` on line 0) |
+| `entry_hash` | sha256 over every field above |
+| `signature` | optional `{alg, key_id, value}` over `entry_hash` |
+
+So a resumed run has two entries: the `paused` receipt, then the final receipt
+whose `supersedes` points back at it. `ledger.history(run_id)` returns that
+chain, oldest first.
+
+```python
+from dynamic_subgraphs import DynamicSubgraphs, EngineConfig, HmacSigner, ReceiptLedger
+
+ledger = ReceiptLedger.for_runs_dir("runs", signer=HmacSigner(secret, key_id="2026"))
+engine = DynamicSubgraphs(EngineConfig(..., recording=True, receipt_ledger=ledger))
+```
+
+The default path is `<runs_dir>/.ledger/receipts.jsonl`. It's off by default
+for the SDK (`receipt_ledger=None`) and on by default for the MCP server. The
+SDK anchors each run's final receipt (the one with token usage filled in), so a
+run gets one entry. `Supervisor(receipt_ledger=...)` and
+`build_supervisor(..., receipt_ledger=...)` anchor every receipt they persist.
+Anchoring never changes a run's outcome: a ledger write error is logged.
+
+What it catches (`ledger.verify()` / `verify_ledger(path)`):
+
+- an edited line (`entry_hash` mismatch, and with a key, a bad signature);
+- a deleted, inserted or reordered line (`seq` gap, broken `prev_entry_hash`);
+- a forged `supersedes` link or a receipt anchored twice;
+- with `require_signatures=True`, any unsigned entry;
+- with `expect_head=...`, a truncated tail. A shorter chain is still a valid
+  chain, so copy `ledger.head().entry_hash` somewhere you control (a ticket,
+  a log stream, Azure immutable blob storage) and pass it back later.
+
+`audit_run(run_dir, ledger=ledger)` checks one run end to end: it runs
+`verify_receipt` on the stored `receipt.json`, then requires that receipt to be
+anchored and to be the run's **latest** entry. That catches what
+`verify_receipt` alone can't: a `receipt.json` rewritten and resealed with a
+fresh hash (not anchored), or an older receipt restored over a newer one
+(superseded).
+
+Appends take a per-path lock in-process and an advisory `flock` across
+processes (POSIX), so several workers can share one ledger.
+
+### Signing
+
+Signers are pluggable. Anything with `algorithm`, `key_id` and
+`sign(message: bytes) -> str` (base64) is a `ReceiptSigner`; anything with
+`verify(message, signature) -> bool` is a `SignatureVerifier`. Wrap a KMS or
+Azure Key Vault client to keep the key off the host.
+
+| Signer | Algorithm | Notes |
+|--------|-----------|-------|
+| `HmacSigner(secret, key_id=...)` | `hmac-sha256` | stdlib. The secret signs and verifies, so use it when the verifier is the host. Keys under 32 bytes are refused. |
+| `Ed25519Signer` | `ed25519` | Public-key. Needs the `signing` extra (`cryptography`). `Ed25519Signer.generate()`, `.from_pem_file(...)`, `.verifier()` for the public half; `Ed25519Verifier.from_pem_file(...)` on the verifying side. |
+| `KeyRing({key_id: verifier})` | any | Verifies a ledger signed across key rotations. |
+
+The ledger signs each entry's `entry_hash`. Because every entry hashes its
+predecessor, a valid signature on the newest entry vouches for the chain
+before it. For a detached signature on one receipt, use
+`sign_receipt(receipt, signer)` and `verify_receipt_signature(receipt, sig,
+verifier)`. Signed messages are domain-separated (`receipt` vs `ledger-entry`),
+so one can't be replayed as the other.
+
+### `ds verify`
+
+The `ds` command (installed with the package) audits a runs directory
+offline:
+
+```bash
+ds verify                                   # every run under ./runs + the ledger
+ds verify run-1 runs/run-2                  # run ids or run directories
+ds verify --hmac-key-env DS_RECEIPT_HMAC_KEY --require-signatures
+ds verify --public-key receipts.pub.pem --expect-head sha256:...
+ds verify --policy-hash sha256:... --json   # every receipt must carry this policy
+ds ledger [--run RUN_ID] [--json]           # list ledger entries
+ds keygen --out receipts.pem                # Ed25519 pair: receipts.pem + receipts.pub.pem
+```
+
+`--runs-dir` defaults to `$DS_RUNS_DIR` or `./runs`, and `--ledger` to
+`<runs-dir>/.ledger/receipts.jsonl` when it exists. Exit codes: `0` all
+verified, `1` a problem was found, `2` usage error. A full sweep also warns
+when the ledger anchors a run whose `receipt.json` is gone. That's a warning,
+not a failure, because a recording selection may skip `receipt.json`.
 
 ### OpenTelemetry
 
@@ -253,9 +348,18 @@ and its `receipt.json` stay as they were and still verify. Otherwise the gate's
 (they live on the trace, not in checkpointed state), the run directory is
 rewritten, and a fresh receipt replaces `receipt.json`. It verifies against the
 rewritten directory, keeps the paused run's `started_at`, and counts the LLM
-calls from before and after the pause.
+calls from before and after the pause. With a receipt ledger, the fresh receipt
+is appended with `supersedes` set to the paused receipt's hash, so the run's
+receipt history survives the overwrite of `receipt.json`.
 
 ## Known limits
+
+- The ledger detects tampering; it doesn't prevent it. Whoever can write the
+  ledger file can drop its tail, and with an HMAC key they can also re-sign.
+  Anchor the head outside the host and prefer Ed25519 (private key with the
+  host, public key with the auditor) when the auditor isn't the host.
+- Receipts that were never persisted (a refused resume, an SDK
+  `engine_failed` run, an unrecorded run) aren't anchored.
 
 - Data flow is checked inside one graph. A parent's tool output passed to a
   child through `inputs_from` isn't traced across the boundary, but the child's

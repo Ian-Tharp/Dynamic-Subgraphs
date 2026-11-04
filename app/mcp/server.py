@@ -42,6 +42,9 @@ Typical flow:
    `resume_run` with that event.
 4. Inspect any run with `get_run`, `get_run_file` (spec, trace, graph, ...),
    and `get_artifact`; `replay_run` re-executes a recorded plan verbatim.
+5. Audit: `get_receipt` returns a run's receipt and its receipt-ledger history;
+   `verify_receipt` re-checks it against the recorded files and the ledger;
+   `verify_ledger` checks the ledger's whole hash chain and signatures.
 
 You may tighten a run's limits (max_nodes, max_llm_calls, max_wall_seconds) but
 never exceed the host policy. Failed runs are recorded too — read their errors.
@@ -237,6 +240,44 @@ def build_server(service: GovernedRunService) -> MCPServer:
         """Read a file an `emit_artifact` node wrote during the run."""
 
         return await _call(service.get_artifact, run_id, name)
+
+    @server.tool(title="Get a run's provenance receipt", annotations=_READ_ONLY)
+    async def get_receipt(
+        run_id: Annotated[str, Field(description="The run id.")],
+    ) -> dict[str, Any]:
+        """A run's sealed provenance receipt and its receipt-ledger entries.
+
+        `ledger.history` lists every receipt anchored for the run, oldest
+        first; each entry's `supersedes` names the receipt it replaced (for
+        example the paused receipt before a resume).
+        """
+
+        return await _call(service.get_receipt, run_id)
+
+    @server.tool(title="Verify a run's receipt", annotations=_READ_ONLY)
+    async def verify_receipt(
+        run_id: Annotated[str, Field(description="The run id.")],
+    ) -> dict[str, Any]:
+        """Re-check a run's receipt against its recorded files and the ledger.
+
+        `ok` is false when the receipt, spec, trace, logged gate decisions or
+        output were changed, when the receipt isn't the run's latest anchored
+        receipt, or when the ledger entry's signature doesn't verify.
+        `problems` says what failed.
+        """
+
+        return await _call(service.verify_receipt, run_id)
+
+    @server.tool(title="Verify the receipt ledger", annotations=_READ_ONLY)
+    async def verify_ledger() -> dict[str, Any]:
+        """Check the receipt ledger's hash chain and entry signatures.
+
+        Returns `ok`, `problems`, the entry count, how many entries are
+        signed, and `head` (the newest entry hash; anchor it elsewhere to
+        detect truncation later).
+        """
+
+        return await _call(service.verify_ledger)
 
     # -------------------------------------------------------------- resources
 

@@ -8,6 +8,33 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
 ## [Unreleased]
 
 ### Added
+- **Receipt ledger** (`ReceiptLedger`, `verify_ledger`). An append-only,
+  hash-chained JSONL log (`<runs_dir>/.ledger/receipts.jsonl`) with one entry
+  per persisted receipt. Each entry links to the previous entry's hash, and
+  `supersedes` links a run's new receipt to the one it replaced, so a resumed
+  run keeps its paused receipt in history. `verify()` catches edited, deleted,
+  reordered or re-linked entries, unsigned entries (`require_signatures`), and
+  a truncated tail (`expect_head`). Opt in with
+  `EngineConfig(receipt_ledger=...)`, `Supervisor(receipt_ledger=...)` or
+  `build_supervisor(..., receipt_ledger=...)`; the SDK anchors one entry per run.
+- **Pluggable receipt signing.** `ReceiptSigner` / `SignatureVerifier`
+  protocols, with `HmacSigner` (stdlib), `Ed25519Signer` / `Ed25519Verifier`
+  (new `signing` extra), and `KeyRing` for key rotation. Ledger entries are
+  signed when the ledger has a signer; `sign_receipt` /
+  `verify_receipt_signature` give detached receipt signatures.
+- **`audit_run(run_dir, ledger=...)`.** Runs `verify_receipt` on the stored
+  receipt, then requires it to be anchored and to be the run's latest entry.
+  This catches a resealed `receipt.json` or a rolled-back receipt.
+- **`ds` CLI** (`ds verify`, `ds ledger`, `ds keygen`). Verifies every run
+  under a runs directory plus the ledger offline, with optional HMAC / Ed25519
+  keys, `--require-signatures`, `--policy-hash`, `--expect-head` and `--json`.
+  Exits 0 when everything verifies, 1 on a problem, 2 on a usage error.
+- **MCP receipt tools:** `get_receipt`, `verify_receipt`, `verify_ledger`. The
+  MCP server anchors every receipt in the ledger by default
+  (`DS_RECEIPT_LEDGER`, `off` to disable). It signs entries when
+  `DS_RECEIPT_HMAC_KEY` or `DS_RECEIPT_ED25519_KEY_FILE` is set, and a bad key
+  fails at startup. `server_info` reports the ledger and signing key id. Run
+  ids starting with `.` are refused.
 - **MCP server (`python -m app.mcp`, new `mcp` extra).** Exposes governed
   subgraph runs to MCP hosts over stdio or streamable HTTP. Tools:
   `run_subgraph`, `resume_run`, `replay_run`, `server_info`,

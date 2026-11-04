@@ -19,7 +19,12 @@ models ← all layers (no upward imports)
   compile: the policy gate (structure, capabilities, data flow, catalog, cost),
   the pre-flight cost bound, the approved-subgraph catalog, and provenance
   receipts. Pure functions over `models` + `policy` + `registry`; the supervisor
-  and runtime call into it, and it never imports them.
+  and runtime call into it, and it never imports them. The receipt ledger
+  (`ledger.py`) is its one stateful piece: an append-only JSONL file the
+  supervisor appends to after persisting a receipt. Signers (`signing.py`) are
+  protocols, so a host can plug in a KMS/HSM.
+- **`cli`** (`app/cli.py`, the `ds` command): offline audit over a runs
+  directory (`ds verify`, `ds ledger`, `ds keygen`). Imports `governance` only.
 - **`registry`**: node-kind definitions, param schemas, tool/subagent allowlists.
 - **`compiler`**: validates specs against registry + policy; builds transient LangGraph graphs.
 - **`runtime`**: executes compiled graphs; wraps nodes with stable ids, timing, errors.

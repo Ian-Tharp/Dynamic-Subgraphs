@@ -5,6 +5,13 @@ Model selection reuses the HTTP API's knobs (`DS_PLANNER`, `DS_PROVIDER`,
 both surfaces identically. The host-owned `ExecutionPolicy` is set with
 `DS_MCP_*` knobs.
 
+Receipts: every persisted receipt is anchored in an append-only, hash-chained
+ledger (`DS_RECEIPT_LEDGER`, default `<runs_dir>/.ledger/receipts.jsonl`; `off`
+disables it). Ledger entries are signed when a key is configured:
+`DS_RECEIPT_HMAC_KEY` (shared secret, >= 32 bytes) or
+`DS_RECEIPT_ED25519_KEY_FILE` (PEM private key; needs `cryptography`), with
+`DS_RECEIPT_KEY_ID` naming the key.
+
 Unlike the API's lenient parsing, a malformed value here raises at startup: an
 MCP server is usually launched by an agent host with no one watching its logs,
 so silently falling back to a default would quietly widen what an agent may do.
@@ -15,8 +22,15 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
+from app.governance import (
+    LEDGER_RELATIVE_PATH,
+    Ed25519Signer,
+    HmacSigner,
+    ReceiptSigner,
+)
 from app.models import NodeKind
 from app.policy import ExecutionPolicy
 
@@ -87,6 +101,46 @@ def policy_from_env(env: Mapping[str, str]) -> ExecutionPolicy:
     )
 
 
+_LEDGER_OFF = frozenset({"off", "none", "false", "0", "disabled"})
+
+
+def ledger_path_from_env(env: Mapping[str, str], runs_dir: str) -> str | None:
+    """`DS_RECEIPT_LEDGER`: unset -> under the runs dir; `off` -> no ledger."""
+
+    raw = env.get("DS_RECEIPT_LEDGER")
+    if raw is None or not raw.strip():
+        return str(Path(runs_dir) / LEDGER_RELATIVE_PATH)
+    if raw.strip().lower() in _LEDGER_OFF:
+        return None
+    return raw.strip()
+
+
+def signer_from_env(env: Mapping[str, str]) -> ReceiptSigner | None:
+    """Build the ledger signer from `DS_RECEIPT_*`; any bad key fails startup."""
+
+    hmac_key = env.get("DS_RECEIPT_HMAC_KEY")
+    ed_file = env.get("DS_RECEIPT_ED25519_KEY_FILE")
+    key_id = (env.get("DS_RECEIPT_KEY_ID") or "default").strip() or "default"
+    if hmac_key and ed_file:
+        raise ValueError(
+            "set only one of DS_RECEIPT_HMAC_KEY and DS_RECEIPT_ED25519_KEY_FILE"
+        )
+    if hmac_key:
+        try:
+            return HmacSigner(hmac_key, key_id=key_id)
+        except ValueError as exc:
+            raise ValueError(f"DS_RECEIPT_HMAC_KEY: {exc}") from exc
+    if ed_file:
+        try:
+            return Ed25519Signer.from_pem_file(ed_file, key_id=key_id)
+        except (OSError, ValueError, TypeError) as exc:
+            raise ValueError(
+                f"DS_RECEIPT_ED25519_KEY_FILE {ed_file!r} is not a usable "
+                f"Ed25519 private key: {exc}"
+            ) from exc
+    return None
+
+
 @dataclass(frozen=True)
 class McpSettings:
     planner: PlannerMode = "mock"
@@ -102,6 +156,20 @@ class McpSettings:
     transport: Transport = "stdio"
     host: str = "127.0.0.1"
     port: int = 8765
+    # Receipt ledger file; None disables anchoring. "" (the default) means
+    # "<runs_dir>/.ledger/receipts.jsonl", resolved by the service.
+    receipt_ledger: str | None = ""
+    # Signs ledger entries (None = unsigned). Never compared or printed.
+    receipt_signer: ReceiptSigner | None = field(
+        default=None, compare=False, repr=False
+    )
+
+    def ledger_path(self) -> Path | None:
+        if self.receipt_ledger is None:
+            return None
+        if self.receipt_ledger == "":
+            return Path(self.runs_dir) / LEDGER_RELATIVE_PATH
+        return Path(self.receipt_ledger)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> McpSettings:
@@ -132,18 +200,21 @@ class McpSettings:
         if max_value_chars < 1:
             raise ValueError("DS_MCP_MAX_VALUE_CHARS must be >= 1")
 
+        runs_dir = env.get("DS_RUNS_DIR", "runs")
         return cls(
             planner=planner,  # type: ignore[arg-type]
             provider=provider,
             model=model,
             model_allowlist=allowlist or (model,),
-            runs_dir=env.get("DS_RUNS_DIR", "runs"),
+            runs_dir=runs_dir,
             policy=policy_from_env(env),
             max_plan_attempts=max_plan_attempts,
             max_value_chars=max_value_chars,
             transport=transport,  # type: ignore[arg-type]
             host=env.get("DS_MCP_HOST", "127.0.0.1"),
             port=_parse_int(env, "DS_MCP_PORT", 8765),
+            receipt_ledger=ledger_path_from_env(env, runs_dir),
+            receipt_signer=signer_from_env(env),
         )
 
     def is_model_allowed(self, model: str, *, provider: str | None = None) -> bool:

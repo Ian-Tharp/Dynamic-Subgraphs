@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
-from app.governance import CatalogPlanner, CostModel
+from app.governance import CatalogPlanner, CostModel, ReceiptLedger
 from app.models import DynamicRunState, GraphSpec, NodeKind
 from app.policy import ExecutionPolicy
 from app.recording import Recorder
@@ -238,6 +238,7 @@ def build_supervisor(
     max_plan_attempts: int = 1,
     planner_guidance: str | None = None,
     cost_model: CostModel | None = None,
+    receipt_ledger: ReceiptLedger | None = None,
 ) -> Supervisor:
     """Construct a Supervisor wired for `config`.
 
@@ -252,7 +253,8 @@ def build_supervisor(
     budget than the host allows. `cost_model` prices plans for the cost gate
     (default: `policy.cost_model`); unset model routing is filled from this
     run's role models. The policy itself is never rewritten, so receipts hash
-    the policy exactly as the host configured it.
+    the policy exactly as the host configured it. `receipt_ledger` (optional)
+    anchors every persisted receipt in an append-only, hash-chained log.
     """
 
     effective_policy = policy or ExecutionPolicy()
@@ -328,6 +330,7 @@ def build_supervisor(
         max_plan_attempts=max_plan_attempts,
         run_models=run_models,
         cost_model=effective_cost_model,
+        receipt_ledger=receipt_ledger,
     )
 
 
