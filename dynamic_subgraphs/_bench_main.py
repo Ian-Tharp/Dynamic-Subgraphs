@@ -2,7 +2,7 @@
 
 Reads a committed run config (``docs/evals/bench-main-v1.config.json``) that
 pins the pack, arms, planner/worker models and per-stratum repeats, then
-calls :func:`dynamic_subgraphs.bench.run_benchmark`. Three modes:
+calls :func:`dynamic_subgraphs.bench.run_benchmark`. Four modes:
 
     # Print the run plan + cost estimate. No engine, no network.
     python -m dynamic_subgraphs._bench_main --config <cfg> --estimate
@@ -10,12 +10,17 @@ calls :func:`dynamic_subgraphs.bench.run_benchmark`. Three modes:
     # Full schedule offline: mock planner + mock runners, zero tokens.
     python -m dynamic_subgraphs._bench_main --config <cfg> --dry-run
 
-    # The paid live run. Requires --live AND the provider keys.
+    # The paid live run. Requires --live AND the provider keys. Stops before
+    # spending past spend_cap_usd (or --max-spend-usd), or when a STOP file
+    # appears in runs/bench/<bench_id>/.
     python -m dynamic_subgraphs._bench_main --config <cfg> --live
 
+    # Apply the frozen §4 rule to a finished run's rows.
+    python -m dynamic_subgraphs._bench_main --config <cfg> --analyze <bench.jsonl>
+
 Internal tooling, not public API (underscore module, see
-docs/api-stability.md). The KEEP/KILL rule is NOT applied here; it lives in
-the results doc so code can't quietly re-score the verdict.
+docs/api-stability.md). The §4 rule lives in ``_bench_verdict``, committed
+before the paid run so the analysis can't be chosen after seeing the data.
 """
 
 from __future__ import annotations
@@ -30,11 +35,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from dynamic_subgraphs._bench_verdict import analyze_file
 from dynamic_subgraphs.bench import (
     BenchArm,
     BenchReport,
+    BenchSpendAbort,
     BenchTask,
     RouterLibrary,
+    SpendGuard,
     resolve_repeats,
     run_benchmark,
 )
@@ -64,6 +72,8 @@ class MainRunConfig:
     usd_per_run: dict[str, float]
     safety_margin: float
     seconds_per_run: float
+    spend_cap_usd: float | None = None
+    headline_arm: str | None = None
 
     @classmethod
     def load(cls, path: Path | str, root: Path | str = ".") -> MainRunConfig:
@@ -95,6 +105,13 @@ class MainRunConfig:
         missing = {a.name for a in arms} - set(usd)
         if missing:
             raise ValueError(f"cost_estimate.usd_per_run missing arms: {missing}")
+        spend_cap = raw.get("spend_cap_usd")
+        if spend_cap is not None and not float(spend_cap) > 0:
+            raise ValueError(f"spend_cap_usd must be > 0, got {spend_cap}")
+        headline = raw.get("headline_arm")
+        invented = {a.name for a in arms if a.origin == "invented"}
+        if headline is not None and headline not in invented:
+            raise ValueError(f"headline_arm {headline!r} is not an invented arm")
         return cls(
             bench_id=raw["bench_id"],
             pack=base / raw["pack"],
@@ -107,7 +124,20 @@ class MainRunConfig:
             usd_per_run=usd,
             safety_margin=float(est["safety_margin"]),
             seconds_per_run=float(est["seconds_per_run"]),
+            spend_cap_usd=float(spend_cap) if spend_cap is not None else None,
+            headline_arm=headline,
         )
+
+    @property
+    def dynamic_arms(self) -> tuple[str, ...]:
+        return tuple(a.name for a in self.arms if a.origin == "invented")
+
+    @property
+    def baseline_arm(self) -> str:
+        routed = [a.name for a in self.arms if a.origin == "routed"]
+        if len(routed) != 1:
+            raise ValueError(f"need exactly one routed arm, got {routed}")
+        return routed[0]
 
 
 def _model(obj: Mapping[str, Any]) -> Model:
@@ -164,14 +194,27 @@ def run_main(
     bench_id: str | None = None,
     max_repeats: int | None = None,
     env: Mapping[str, str] | None = None,
+    max_spend_usd: float | None = None,
 ) -> BenchReport:
     """Execute the configured run. ``mode`` is ``"dry-run"`` or ``"live"``.
 
     Dry-run uses the mock planner and mock runners (zero tokens) on the exact
     same pack, arms and repeat schedule as the live run.
+
+    Both modes run under a :class:`SpendGuard` (the kill-switch):
+    ``max_spend_usd`` overrides the config's ``spend_cap_usd``. A live run
+    refuses to start without a cap, and aborts if a successful run comes back
+    unpriced. Creating ``<runs_dir>/bench/<bench_id>/STOP`` stops the run
+    before its next task run.
     """
     if mode not in ("dry-run", "live"):
         raise ValueError(f"unknown mode {mode!r}")
+    cap = max_spend_usd if max_spend_usd is not None else cfg.spend_cap_usd
+    if mode == "live" and cap is None:
+        raise SystemExit(
+            "live run refused: no spend cap (set spend_cap_usd in the config "
+            "or pass --max-spend-usd). Nothing was spent."
+        )
     if mode == "live":
         env = os.environ if env is None else env
         missing = [k for k in LIVE_ENV_VARS if not env.get(k)]
@@ -181,15 +224,27 @@ def run_main(
             )
     tasks = BenchTask.from_jsonl(cfg.pack)
     library = RouterLibrary.from_dir(cfg.router_library, cfg.single_fixed)
+    bid = bench_id or cfg.bench_id
+    guard = (
+        SpendGuard(
+            cap_usd=cap,
+            fallback_usd_per_run=cfg.usd_per_run,
+            stop_file=Path(runs_dir) / "bench" / bid / "STOP",
+            require_priced=mode == "live",
+        )
+        if cap is not None
+        else None
+    )
     return run_benchmark(
         tasks=tasks,
         repeats=_effective_repeats(cfg, max_repeats),
         runs_dir=runs_dir,
         router_library=library,
-        bench_id=bench_id or cfg.bench_id,
+        bench_id=bid,
         planner="mock" if mode == "dry-run" else "llm",
         model=cfg.worker_model,
         arms=cfg.arms,
+        spend_guard=guard,
     )
 
 
@@ -208,6 +263,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     mode.add_argument("--estimate", action="store_true", help="plan + cost only")
     mode.add_argument("--dry-run", action="store_true", help="mock, zero tokens")
     mode.add_argument("--live", action="store_true", help="PAID live run")
+    mode.add_argument(
+        "--analyze",
+        type=Path,
+        metavar="BENCH_JSONL",
+        help="apply the frozen §4 rule; writes verdict.json + verdict.md",
+    )
     p.add_argument("--runs-dir", type=Path, default=None)
     p.add_argument("--bench-id", default=None, help="override config bench_id")
     p.add_argument(
@@ -216,9 +277,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="cap every stratum's repeats (smoke runs only; not the registered sizing)",
     )
+    p.add_argument(
+        "--max-spend-usd",
+        type=float,
+        default=None,
+        help="kill-switch: stop before spend exceeds this (overrides spend_cap_usd)",
+    )
+    p.add_argument(
+        "--out-dir",
+        type=Path,
+        default=None,
+        help="--analyze output dir (default: next to the bench.jsonl)",
+    )
     args = p.parse_args(argv)
 
     cfg = MainRunConfig.load(args.config)
+    if args.analyze is not None:
+        _, md = analyze_file(
+            args.analyze,
+            dynamic_arms=cfg.dynamic_arms,
+            baseline_arm=cfg.baseline_arm,
+            headline_arm=cfg.headline_arm,
+            expected_repeats=cfg.repeats_by_task_type,
+            out_dir=args.out_dir,
+        )
+        print(md)
+        dest = args.out_dir or args.analyze.parent
+        print(f"report: {dest / 'verdict.json'}")
+        return 0
+
     tasks = BenchTask.from_jsonl(cfg.pack)
     plan = plan_run(cfg, tasks, args.max_repeats)
     print(
@@ -230,9 +317,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"(${plan.estimated_usd_with_margin:.2f} with x{cfg.safety_margin} margin), "
         f"~{plan.estimated_hours:.1f} h sequential"
     )
+    cap = args.max_spend_usd if args.max_spend_usd is not None else cfg.spend_cap_usd
+    print(f"kill-switch: spend cap {'none' if cap is None else f'${cap:.2f}'}")
     if args.estimate:
         return 0
 
+    try:
+        report = _execute(cfg, args)
+    except BenchSpendAbort as exc:
+        print(f"ABORTED by kill-switch: {exc}", file=sys.stderr)
+        print("completed rows are in bench.jsonl; see spend.json", file=sys.stderr)
+        return 3
+    print(json.dumps(_summarize(report), indent=2))
+    return 0
+
+
+def _execute(cfg: MainRunConfig, args: argparse.Namespace) -> BenchReport:
     if args.live:
         # LangSmith quota was exhausted during the pilot; tracing only adds
         # retry latency for dropped data, so keep it off (pilot parity).
@@ -245,6 +345,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             runs_dir=runs_dir,
             bench_id=args.bench_id,
             max_repeats=args.max_repeats,
+            max_spend_usd=args.max_spend_usd,
         )
     else:
         runs_dir = args.runs_dir or Path(tempfile.mkdtemp(prefix="bench-dry-"))
@@ -254,10 +355,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             runs_dir=runs_dir,
             bench_id=args.bench_id or f"{cfg.bench_id}-dryrun",
             max_repeats=args.max_repeats,
+            max_spend_usd=args.max_spend_usd,
         )
-    print(json.dumps(_summarize(report), indent=2))
     print(f"rows: {Path(runs_dir) / 'bench' / report.bench_id / 'bench.jsonl'}")
-    return 0
+    return report
 
 
 if __name__ == "__main__":  # pragma: no cover

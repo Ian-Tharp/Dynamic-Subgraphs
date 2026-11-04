@@ -8,6 +8,23 @@ pre-1.0 (`0.x`), the public API may change between minor versions.
 ## [Unreleased]
 
 ### Added
+- **Main-run decision kit (internal bench tooling).** `--analyze <bench.jsonl>`
+  in `python -m dynamic_subgraphs._bench_main` applies the frozen §4 rule of
+  `docs/evals/bench-dynamic-vs-fixed-2026-06.md` via the new
+  `dynamic_subgraphs/_bench_verdict.py`: per-task paired Pareto keyed by
+  arm name (A1/A2 are both `invented`), full and worker-only cost, the 60%
+  share plus an exact one-sided sign test, a seeded 10,000-resample
+  bootstrap CI, the λ = 0.05 penalty cut, and KEEP / KILL / INCONCLUSIVE /
+  INCONCLUSIVE-leaning-template-cache per sub-arm, headline and stratum. It
+  writes `verdict.json` and `verdict.md`. Golden tests cover all four
+  verdicts. The runbook (`docs/evals/bench-main-run-v1.md` §6) lists every
+  choice the code makes and the win bars the owner signs off on.
+- **Live spend kill-switch for the bench.** `SpendGuard` stops a run before
+  spend would pass `spend_cap_usd` (config: $8, the top of the registered
+  envelope; `--max-spend-usd` overrides) or when a `STOP` file appears in the
+  bench dir. A live run refuses to start without a cap and aborts on
+  untrackable (unpriced) spend. Completed rows are kept and `spend.json`
+  records why it stopped.
 - **MCP server (`python -m app.mcp`, new `mcp` extra).** Exposes governed
   subgraph runs to MCP hosts over stdio or streamable HTTP. Tools:
   `run_subgraph`, `resume_run`, `replay_run`, `server_info`,

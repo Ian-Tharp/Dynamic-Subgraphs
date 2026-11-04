@@ -1,10 +1,12 @@
 # Main run v1 — runbook (dynamic vs router)
 
-> **Status:** READY, validated offline. Only the paid live run is left.
+> **Status:** READY, validated offline. Only the paid live run is left, and
+> it needs the owner's sign-off on §6 first.
 > The decision rule is the frozen §4 of
 > [`bench-dynamic-vs-fixed-2026-06.md`](./bench-dynamic-vs-fixed-2026-06.md);
-> this runbook implements it and does not change it. No verdict is computed
-> by code. Apply §4 to the rows in the results doc.
+> this runbook implements it and does not change it. §4 is applied by
+> `dynamic_subgraphs/_bench_verdict.py`, committed before any paid main-run
+> data exists, so the analysis can't be chosen after seeing results (§6).
 
 ## 1. What is pinned
 
@@ -118,11 +120,41 @@ uv run python -m dynamic_subgraphs._bench_main \
   --config docs/evals/bench-main-v1.config.json --dry-run
 
 # 3. THE LIVE RUN (paid). Needs both keys; refuses before any spend if either
-#    is missing. Forces LangSmith tracing off (pilot parity).
+#    is missing. Forces LangSmith tracing off (pilot parity). Runs under the
+#    spend kill-switch (below).
 export OPENAI_API_KEY=...   TAVILY_API_KEY=...
 uv run python -m dynamic_subgraphs._bench_main \
   --config docs/evals/bench-main-v1.config.json --live
+
+# 4. Apply the frozen §4 rule. Writes verdict.json + verdict.md next to the
+#    rows and prints the markdown table.
+uv run python -m dynamic_subgraphs._bench_main \
+  --config docs/evals/bench-main-v1.config.json \
+  --analyze runs/bench/main-v1/bench.jsonl
 ```
+
+### Spend kill-switch
+
+Every `--dry-run` and `--live` run is guarded by a `SpendGuard`
+(`dynamic_subgraphs/bench.py`):
+
+- **Cap.** `spend_cap_usd` in the config is **$8.00**, the top of §4's
+  registered $4–8 envelope (the estimate with margin is about $6).
+  `--max-spend-usd X` overrides it for one launch. Before each task run, the
+  guard stops the benchmark if spend so far plus that run's estimate
+  (`cost_estimate.usd_per_run`) would pass the cap. It can overshoot by at
+  most one run's cost minus its estimate. A live run refuses to start with
+  no cap.
+- **Manual stop.** Create `runs/bench/<bench_id>/STOP` (e.g.
+  `touch runs/bench/main-v1/STOP`) and the run stops before its next task
+  run. The in-flight run finishes and is recorded.
+- **Untracked spend.** Spend is each row's `cost_usd`. A failed run that
+  used tokens but has no price is charged its arm's estimate. In a live run
+  a *successful* run with tokens and no price aborts, because spend can't
+  be tracked (install the `cost` extra: `uv sync --all-extras`).
+- **On abort** the CLI exits with code 3. Every completed row is in
+  `bench.jsonl`, `spend.json` holds the spend and the reason, and
+  `report.json` is not written. Treat it like any other partial run (below).
 
 PowerShell for step 3: `$env:OPENAI_API_KEY="..."; $env:TAVILY_API_KEY="..."`,
 then the same `uv run ...` line.
@@ -155,13 +187,80 @@ the registered sizing, so never report verdicts from a capped run.
 - `tests/test_bench.py` covers the harness: sub-arms, per-type repeats, rows
   surviving a mid-run crash, and refusing duplicate arm names.
 - The full 1,152-run `--dry-run` was run locally: 1,152 rows, all `ok`, 288
-  per arm, in about 36 s.
+  per arm, in about 36 s. `--analyze` on those rows runs cleanly in about
+  3 s (the mock rows spend no tokens, so the verdicts it prints are
+  meaningless and the report says so).
+- `tests/test_bench_verdict.py` holds golden synthetic fixtures that land on
+  each of the four verdicts (with ties, floor-ineligible tasks and failed
+  runs), plus every number in §6. `tests/test_bench_killswitch.py` covers
+  the cap, the STOP file, untracked spend and the mid-run abort.
 
 ## 5. After the run
 
-Apply §4 per dynamic sub-arm against `routed`: the floor at 0.6, the
-per-task paired Pareto on (quality, full cost), the worker-only sensitivity
-cut, ≥60% plus a sign test at p<0.05 with a 10,000-resample bootstrap CI, and
-the λ = 0.05 penalty cut. Report verdict lines per headline (structural and
-goal) and per stratum. The headline is **A2 vs B**, with A1 alongside. Write
-the results into §5 of the results doc.
+Run step 4 (`--analyze`) on the run's `bench.jsonl`. It applies §4 per
+dynamic sub-arm against `routed` and prints one verdict line per sub-arm ×
+headline (structural, goal) × scope (all tasks, then each stratum). The
+headline is **A2 vs B**, with A1 alongside. Copy `verdict.md` into §5 of the
+results doc and commit `verdict.json` with it. If the report says
+`registered_sizing: false` or lists unpaired tasks, it is not a
+decision-grade run.
+
+## 6. Reading the verdict (owner sign-off before the paid run)
+
+### How §4 is turned into code
+
+§4 leaves several choices open. Each is fixed in `_bench_verdict.py` now,
+before any paid data, so none can be picked after seeing results.
+Changing any of them after the run is a re-registration and must be written
+up as one.
+
+| Choice | Fixed as |
+|---|---|
+| Pairing | By `ArmRunRow.arm`, not origin (A1 and A2 are both `invented`; `corpus.compare_origins` can't tell them apart). Each sub-arm vs `routed`. |
+| Per-task value | Mean over repeats of the headline score, blended quality, full cost, worker-only cost and tokens. Failed runs score 0. |
+| Floor | An arm meets it on a task iff its mean blended quality ≥ 0.6. Task is floor-eligible iff at least one arm meets it. If only one arm does, that arm wins the task. If neither does, the task is dropped. |
+| Pareto | Win = ≥ on headline score and ≤ on cost, strictly better on one. Anything else is a tie, including better quality at higher cost. |
+| Cost | Full = `cost_usd` (planner included). Worker-only = `worker_cost_usd`, or `cost_usd` when there's no planner split (the router has no planner). If any row on a task is unpriced, that task uses tokens and both bases are equal (flagged). |
+| Win share | Wins ÷ floor-eligible tasks. Ties stay in the denominator ("≥60% of floor-eligible tasks"). |
+| Sign test | Exact one-sided binomial (`math.comb`) over decisive tasks, ties excluded. |
+| Bar | Share ≥ 60% **and** p < 0.05. |
+| Bootstrap | 95% percentile CI of the win share; resample eligible tasks; 10,000 resamples; `random.Random(20260611)`. Reported, not part of the bar. |
+| Verdict | KEEP: dynamic clears the bar on full cost. KILL: router clears it on full **and** worker-only cost. INCONCLUSIVE-leaning-template-cache: dynamic clears it on worker-only cost only. Otherwise INCONCLUSIVE. |
+| λ cut | Per run `headline − 0.05 × tokens / 10,000`; per task the higher mean wins. Reported, never decides. |
+| Strata | Same computation, marked descriptive. |
+
+### The arithmetic
+
+These numbers come from the code and are pinned in
+`tests/test_bench_verdict.py`.
+
+- **No stratum can reach a verdict.** A stratum has 4 tasks, so the best
+  one-sided p is 4/4 wins = 1/16 = **0.0625**. Per-stratum lines are
+  descriptive only. They can show "complex tasks favor planning" as a
+  pattern, but they can't KEEP or KILL anything.
+- **The headline needs ≥17 of 24 wins (71%), not 60%.** With no ties,
+  16/24 gives p = 0.076 and 17/24 gives p = 0.032. The sign test binds
+  harder than the 60% share.
+- **Ties move the bar.** Ties leave the sign test's n but stay in the
+  share's denominator, so both bars move:
+
+  | Ties (of 24 eligible) | Decisive n | Wins for p<0.05 | Wins for ≥60% share | Wins needed |
+  |---|---|---|---|---|
+  | 0 | 24 | 17 | 15 | **17** |
+  | 2 | 22 | 16 | 15 | **16** |
+  | 4 | 20 | 15 | 15 | **15** |
+  | 6 | 18 | 13 | 15 | **15** |
+  | 8 | 16 | 12 | 15 | **15** |
+  | ≥10 | ≤14 | – | 15 | **impossible** |
+
+  With 8 ties, 12/16 decisive passes the sign test (p = 0.038), but 12/24 is
+  only a 50% share, so it is INCONCLUSIVE. With 10 or more ties no KEEP or
+  KILL is possible. Floor-ineligible tasks shrink the 24 the same way.
+- **Repeats don't add decision power.** Repeats are averaged into one value
+  per task before the Pareto check, so they reduce noise within a task.
+  The sign test's n is the number of tasks (at most 24), whatever the repeat
+  count. A larger batch of tasks is the only way to more power, which is
+  §4's INCONCLUSIVE path ("expand the batch").
+
+Sign-off: the owner has read this section and accepts these numbers before
+launching `--live`.

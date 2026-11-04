@@ -44,6 +44,9 @@
       "note": "C (sanity floor): fixed-host-graph-v1, unchanged."
     }
   ],
+  "headline_arm": "invented-a2",
+  "spend_cap_usd": 8.0,
+  "spend_cap_note": "Live kill-switch: the run stops before its next task run once booked spend plus that run's estimate would pass this. $8 is the top of the §4 registered envelope ($4-8); the estimate with margin is ~$6.",
   "repeats_cap": 20,
   "repeats_by_task_type": {
     "compare": 20,

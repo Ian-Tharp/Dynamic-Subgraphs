@@ -9,9 +9,9 @@ Consumes the eval layer (never re-implements scoring). Arms (design spec §7):
 
 Persists runs/bench/<bench_id>/bench.jsonl (one ArmRunRow per line) and
 report.json (row count + pilot CV table). The KEEP/KILL decision rule is
-deliberately NOT encoded here — it is pre-registered after the pilot
-(spec §0/§7) and applied in the results doc, not by code that could be
-quietly edited post-hoc.
+deliberately NOT encoded here: it is pre-registered (results doc §4) and
+applied by ``dynamic_subgraphs._bench_verdict``, which was committed before
+any paid main-run data existed. ``SpendGuard`` is the live-run kill-switch.
 """
 
 from __future__ import annotations
@@ -66,6 +66,85 @@ class BenchIntegrityError(DynamicSubgraphsError, RuntimeError):
     whose directory already holds rows from a prior attempt, which would
     mislead corpus readers. Abort-fast beats polluted verdicts.
     """
+
+
+class BenchSpendAbort(DynamicSubgraphsError, RuntimeError):
+    """Raised by :class:`SpendGuard` to stop a run before more money is spent.
+
+    Every row finished before the abort is already in ``bench.jsonl``, and
+    ``spend.json`` records why the run stopped.
+    """
+
+
+@dataclass
+class SpendGuard:
+    """Live spend kill-switch for :func:`run_benchmark`.
+
+    Before each run it stops the benchmark if ``stop_file`` exists (an
+    operator's manual kill) or if the spend so far plus the next run's
+    estimate would exceed ``cap_usd``. So the cap can be overshot by at most
+    the difference between one run's real cost and its estimate.
+
+    Spend is each row's ``cost_usd``. A row that used tokens but has no price
+    is charged its arm's estimate from ``fallback_usd_per_run``; with
+    ``require_priced`` (live runs) an unpriced *successful* row aborts
+    instead, because the spend could not be tracked at all.
+    """
+
+    cap_usd: float
+    fallback_usd_per_run: Mapping[str, float] = field(default_factory=dict)
+    stop_file: Path | None = None
+    require_priced: bool = False
+    spent_usd: float = 0.0
+    runs: int = 0
+    unpriced_runs: int = 0
+    aborted: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.cap_usd > 0:
+            raise ValueError(f"cap_usd must be > 0, got {self.cap_usd}")
+
+    def before_run(self, arm: str, run_id: str) -> None:
+        """Raise :class:`BenchSpendAbort` if ``run_id`` must not start."""
+        if self.stop_file is not None and self.stop_file.exists():
+            self._abort(f"stop file {self.stop_file} present before {run_id}")
+        projected = self.spent_usd + self.fallback_usd_per_run.get(arm, 0.0)
+        if projected > self.cap_usd:
+            self._abort(
+                f"spend cap ${self.cap_usd:.2f} would be exceeded by {run_id}: "
+                f"spent ${self.spent_usd:.4f} + estimate "
+                f"${self.fallback_usd_per_run.get(arm, 0.0):.4f}"
+            )
+
+    def charge(self, row: ArmRunRow) -> None:
+        """Book one finished row's spend."""
+        self.runs += 1
+        if row.cost_usd is not None:
+            self.spent_usd += row.cost_usd
+            return
+        if row.total_tokens <= 0:
+            return  # nothing was spent (mock run, or failed before any call)
+        if self.require_priced and row.status == "ok":
+            self._abort(
+                f"run {row.run_id} used {row.total_tokens} tokens with no price; "
+                "live spend can't be tracked (install the 'cost' extra)"
+            )
+        self.unpriced_runs += 1
+        self.spent_usd += self.fallback_usd_per_run.get(row.arm, 0.0)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "cap_usd": self.cap_usd,
+            "spent_usd": round(self.spent_usd, 6),
+            "runs": self.runs,
+            "unpriced_runs": self.unpriced_runs,
+            "aborted": self.aborted,
+            "stop_file": str(self.stop_file) if self.stop_file else None,
+        }
+
+    def _abort(self, reason: str) -> None:
+        self.aborted = reason
+        raise BenchSpendAbort(reason)
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +447,7 @@ def run_benchmark(
     model: Model | None = None,
     planner_model: Model | None = None,
     arms: Sequence[BenchArm] | None = None,
+    spend_guard: SpendGuard | None = None,
 ) -> BenchReport:
     """Run all tasks across all arms for ``repeats`` repetitions.
 
@@ -389,10 +469,16 @@ def run_benchmark(
     - ``"authored"``: the single fixed-floor spec; substituted via fill_spec;
       runs on the REAL worker path.
 
+    ``spend_guard`` is the live kill-switch: it is checked before every run
+    and charged after it. When it trips, :class:`BenchSpendAbort` propagates
+    after the completed rows are flushed; ``spend.json`` in the bench dir
+    records the spend and the reason either way.
+
     Runs are sequential (no threading). Plan/validation failures synthesize
     quality=0.0 / floor=False rows (the plan-failure rule).
 
     Raises:
+        BenchSpendAbort: if ``spend_guard`` stops the run.
         BenchIntegrityError: if ``bench_id`` reuses a non-empty bench dir, or
             if a run succeeds (status=="ok") without an EvalResult — an
             infrastructure failure that must not be booked as quality-0 data.
@@ -432,6 +518,49 @@ def run_benchmark(
 
     rows: list[ArmRunRow] = []
     bench_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        _run_rows(
+            tasks=tasks,
+            arm_list=arm_list,
+            task_repeats=task_repeats,
+            bench_id=bench_id,
+            bench_dir=bench_dir,
+            router_library=router_library,
+            engine=engine,
+            planner_model=planner_model,
+            spend_guard=spend_guard,
+            rows=rows,
+        )
+    finally:
+        if spend_guard is not None:
+            (bench_dir / "spend.json").write_text(
+                json.dumps(spend_guard.to_dict(), indent=2), encoding="utf-8"
+            )
+
+    pilot = _pilot_stats(rows)
+    report = BenchReport(
+        bench_id=bench_id,
+        rows=tuple(rows),
+        pilot=pilot,
+    )
+    _persist(report, runs_dir)
+    return report
+
+
+def _run_rows(
+    *,
+    tasks: Sequence[BenchTask],
+    arm_list: Sequence[BenchArm],
+    task_repeats: Mapping[str, int],
+    bench_id: str,
+    bench_dir: Path,
+    router_library: RouterLibrary,
+    engine: DynamicSubgraphs,
+    planner_model: Model | None,
+    spend_guard: SpendGuard | None,
+    rows: list[ArmRunRow],
+) -> None:
+    """The sequential run loop; appends to ``rows`` and ``bench.jsonl``."""
     with (bench_dir / "bench.jsonl").open("w", encoding="utf-8") as partial:
         for task in tasks:
             for bench_arm in arm_list:
@@ -443,6 +572,8 @@ def run_benchmark(
                 )
                 for repeat in range(task_repeats[task.task_id]):
                     run_id = f"{bench_id}-{task.task_id}-{arm}-r{repeat}"
+                    if spend_guard is not None:
+                        spend_guard.before_run(arm, run_id)
 
                     # Determine fixed_spec for routed/authored arms.
                     fixed: GraphSpec | None
@@ -537,12 +668,5 @@ def run_benchmark(
                     rows.append(row)
                     partial.write(json.dumps(asdict(row)) + "\n")
                     partial.flush()
-
-    pilot = _pilot_stats(rows)
-    report = BenchReport(
-        bench_id=bench_id,
-        rows=tuple(rows),
-        pilot=pilot,
-    )
-    _persist(report, runs_dir)
-    return report
+                    if spend_guard is not None:
+                        spend_guard.charge(row)
