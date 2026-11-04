@@ -20,6 +20,9 @@ What "governed" means at this boundary:
   a run or replay can never overwrite another run's audit trail.
 - **Bounded reads.** Run files are read by name from a fixed set; artifacts go
   through the recorder's path-safe lookup.
+- **Anchored receipts.** Every persisted receipt is appended to a hash-chained
+  receipt ledger (signed when the host configures a key), and clients can
+  re-verify any run, or the whole ledger, without trusting the run directory.
 """
 
 from __future__ import annotations
@@ -35,6 +38,13 @@ from typing import Any
 from langchain_core.callbacks import UsageMetadataCallbackHandler
 
 from app.assembly import RunConfig, build_supervisor
+from app.governance import (
+    ReceiptLedger,
+    audit_run,
+    load_stored_receipt,
+    policy_hash,
+)
+from app.governance.signing import verifier_for
 from app.policy import ExecutionPolicy
 from app.recording import FileRecorder
 from app.recording.run_config import load_run_config, save_run_config
@@ -177,6 +187,12 @@ class GovernedRunService:
         self.model_providers = model_providers or default_model_providers()
         self._checkpointer = checkpointer
         self._supervisor_factory = supervisor_factory or build_supervisor
+        ledger_path = settings.ledger_path()
+        self.ledger: ReceiptLedger | None = (
+            ReceiptLedger(ledger_path, signer=settings.receipt_signer)
+            if ledger_path is not None
+            else None
+        )
         # Ids claimed by in-flight runs, so two concurrent calls can't both pass
         # the "is this id new?" check and then write into the same directory.
         self._reserved: set[str] = set()
@@ -198,7 +214,15 @@ class GovernedRunService:
             "max_plan_attempts": s.max_plan_attempts,
             "runs_dir": str(self.recorder.root_dir),
             "recording": "always on (every run, including failures)",
+            "receipt_ledger": str(self.ledger.path) if self.ledger else None,
+            "receipt_signing": self._signing_info(),
         }
+
+    def _signing_info(self) -> dict[str, str] | None:
+        signer = self.settings.receipt_signer
+        if signer is None or self.ledger is None:
+            return None
+        return {"alg": signer.algorithm, "key_id": signer.key_id}
 
     def describe_registry(self) -> dict[str, Any]:
         """The node kinds, tools, and subagents a plan may draw on."""
@@ -365,6 +389,80 @@ class GovernedRunService:
             raise NotFoundError(f"run {run_id!r} has no artifact {name!r}")
         return _read_capped(path)
 
+    # -------------------------------------------------------------- receipts
+
+    def get_receipt(self, run_id: str) -> dict[str, Any]:
+        """A run's stored receipt and its place in the receipt ledger."""
+
+        self._require_run(run_id)
+        run_dir = self.recorder.run_dir(run_id)
+        try:
+            receipt = load_stored_receipt(run_dir)
+        except FileNotFoundError as exc:
+            raise NotFoundError(f"run {run_id!r} has no receipt.json") from exc
+        except ValueError as exc:
+            raise GovernanceError(str(exc)) from exc
+        ledger: dict[str, Any] = {"enabled": self.ledger is not None}
+        if self.ledger is not None:
+            history = self.ledger.history(run_id)
+            entry = next(
+                (e for e in history if e.receipt_hash == receipt.receipt_hash), None
+            )
+            ledger.update(
+                anchored=entry is not None,
+                latest=bool(history)
+                and history[-1].receipt_hash == receipt.receipt_hash,
+                entry=entry.model_dump(mode="json") if entry else None,
+                # Oldest first; `supersedes` links each receipt to the one it
+                # replaced (e.g. the paused receipt before a resume).
+                history=[e.model_dump(mode="json") for e in history],
+            )
+        return {
+            "run_id": run_id,
+            "receipt": receipt.model_dump(mode="json"),
+            "ledger": ledger,
+        }
+
+    def verify_receipt(self, run_id: str) -> dict[str, Any]:
+        """Re-check a run's receipt against its files and the receipt ledger."""
+
+        self._require_run(run_id)
+        verifier = (
+            verifier_for(self.settings.receipt_signer)
+            if self.settings.receipt_signer is not None
+            else None
+        )
+        audit = audit_run(
+            self.recorder.run_dir(run_id), ledger=self.ledger, verifier=verifier
+        )
+        out = audit.as_dict()
+        host_hash = policy_hash(self.settings.policy)
+        out["policy"] = {
+            "receipt_policy_hash": (
+                audit.receipt.policy_hash if audit.receipt else None
+            ),
+            "host_policy_hash": host_hash,
+            # A run a client narrowed (max_nodes, ...) hashes differently from
+            # the host policy; that is expected, so it's reported, not flagged.
+            "issued_under_host_policy": (
+                audit.receipt is not None and audit.receipt.policy_hash == host_hash
+            ),
+        }
+        out["ledger_enabled"] = self.ledger is not None
+        return out
+
+    def verify_ledger(self) -> dict[str, Any]:
+        """Check the receipt ledger's whole hash chain (and signatures)."""
+
+        if self.ledger is None:
+            raise GovernanceError(
+                "the receipt ledger is disabled on this server (DS_RECEIPT_LEDGER=off)"
+            )
+        result = self.ledger.verify().as_dict()
+        result["path"] = str(self.ledger.path)
+        result["signing"] = self._signing_info()
+        return result
+
     # --------------------------------------------------------------- helpers
 
     def _resolve_config(
@@ -430,6 +528,7 @@ class GovernedRunService:
             chat_callbacks=callbacks,
             policy=policy,
             max_plan_attempts=self.settings.max_plan_attempts,
+            receipt_ledger=self.ledger,
         )
 
     def _require_run(self, run_id: str) -> None:
@@ -461,6 +560,10 @@ class GovernedRunService:
     @contextmanager
     def _reserve(self, run_id: str, *, must_be_new: bool) -> Iterator[None]:
         self._validate_id(run_id)
+        if must_be_new and run_id.startswith("."):
+            # Dot-names under the runs dir are reserved (the receipt ledger
+            # lives in `.ledger/`).
+            raise GovernanceError(f"run ids may not start with '.': {run_id!r}")
         with self._lock:
             if run_id in self._reserved:
                 raise GovernanceError(f"run {run_id!r} is busy in another call")

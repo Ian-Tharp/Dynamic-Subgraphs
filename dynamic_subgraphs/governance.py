@@ -1,10 +1,12 @@
-"""Plan-level governance for the SDK: policy gate, cost bound, catalog, receipts.
+"""Plan-level governance for the SDK: policy gate, cost bound, catalog, receipts,
+receipt ledger and signing.
 
 Re-exports the pure governance API from ``app.governance`` so SDK users (and
 other hosts, such as an MCP server) have one stable import path::
 
     from dynamic_subgraphs.governance import (
         CostModel, SubgraphCatalog, check_plan_policy, verify_receipt,
+        ReceiptLedger, HmacSigner, verify_ledger,
     )
 
 See ``docs/governance.md``.
@@ -23,16 +25,28 @@ from app.governance import (
     CostBound,
     CostFigures,
     CostModel,
+    Ed25519Signer,
+    Ed25519Verifier,
     GateDecision,
     GateDecisionRecord,
+    HmacSigner,
+    KeyRing,
+    LedgerEntry,
+    LedgerVerification,
     ModelPrice,
     PlanGateReport,
     PlanPolicyViolation,
     PolicyViolation,
     ProvenanceReceipt,
+    ReceiptLedger,
+    ReceiptSigner,
     ReceiptVerification,
+    RunAudit,
+    Signature,
+    SignatureVerifier,
     SubgraphCatalog,
     TokenCap,
+    audit_run,
     build_llm_catalog_selector,
     build_receipt,
     check_plan_policy,
@@ -42,7 +56,10 @@ from app.governance import (
     keyword_selector,
     plan_hash,
     policy_hash,
+    sign_receipt,
+    verify_ledger,
     verify_receipt,
+    verify_receipt_signature,
 )
 
 __all__ = [
@@ -56,16 +73,28 @@ __all__ = [
     "CostBound",
     "CostFigures",
     "CostModel",
+    "Ed25519Signer",
+    "Ed25519Verifier",
     "GateDecision",
     "GateDecisionRecord",
+    "HmacSigner",
+    "KeyRing",
+    "LedgerEntry",
+    "LedgerVerification",
     "ModelPrice",
     "PlanGateReport",
     "PlanPolicyViolation",
     "PolicyViolation",
     "ProvenanceReceipt",
+    "ReceiptLedger",
+    "ReceiptSigner",
     "ReceiptVerification",
+    "RunAudit",
+    "Signature",
+    "SignatureVerifier",
     "SubgraphCatalog",
     "TokenCap",
+    "audit_run",
     "build_llm_catalog_selector",
     "build_receipt",
     "check_plan_policy",
@@ -75,5 +104,8 @@ __all__ = [
     "keyword_selector",
     "plan_hash",
     "policy_hash",
+    "sign_receipt",
+    "verify_ledger",
     "verify_receipt",
+    "verify_receipt_signature",
 ]

@@ -12,6 +12,7 @@ from app.governance import (
     CostModel,
     PlanGateReport,
     ProvenanceReceipt,
+    ReceiptLedger,
     build_receipt,
     check_plan_policy,
     plan_hash,
@@ -88,6 +89,7 @@ class Supervisor:
         max_plan_attempts: int = 1,
         run_models: Iterable[str] = (),
         cost_model: CostModel | None = None,
+        receipt_ledger: ReceiptLedger | None = None,
     ) -> None:
         self._planner = planner
         self._executor = executor
@@ -100,6 +102,9 @@ class Supervisor:
         self._run_models = tuple(sorted(set(run_models)))
         # Prices/caps/routing for the cost gate (overrides policy.cost_model).
         self._cost_model = cost_model
+        # Append-only, hash-chained log every persisted receipt is anchored in
+        # (None = off). See app.governance.ledger.
+        self._receipt_ledger = receipt_ledger
         self._graph = build_supervisor_graph(
             planner=planner,
             executor=executor,
@@ -113,6 +118,10 @@ class Supervisor:
     @property
     def policy(self) -> ExecutionPolicy:
         return self._policy
+
+    @property
+    def receipt_ledger(self) -> ReceiptLedger | None:
+        return self._receipt_ledger
 
     def run(self, prompt: str, *, run_id: str) -> SupervisorResult:
         started_at = datetime.now(UTC)
@@ -189,16 +198,32 @@ class Supervisor:
         return _replace_result(result, receipt=receipt)
 
     def persist_receipt(self, receipt: ProvenanceReceipt) -> None:
-        """Write ``receipt.json`` if the recorder supports it and the run was recorded."""
-        writer = getattr(self._recorder, "record_receipt", None)
-        if writer is None or receipt.recorder_run_id is None:
+        """Write ``receipt.json`` and anchor it in the receipt ledger.
+
+        Only a recorded run's receipt is persisted (``recorder_run_id`` set).
+        The ledger append happens even if the recorder can't write
+        ``receipt.json`` (e.g. a recording selection that skips it), so the
+        receipt you hold in memory is still anchored. Never raises.
+        """
+        if receipt.recorder_run_id is None:
             return
-        try:
-            writer(receipt.recorder_run_id, receipt.model_dump(mode="json"))
-        except Exception:
-            logger.warning(
-                "failed to persist receipt for %r", receipt.run_id, exc_info=True
-            )
+        writer = getattr(self._recorder, "record_receipt", None)
+        if writer is not None:
+            try:
+                writer(receipt.recorder_run_id, receipt.model_dump(mode="json"))
+            except Exception:
+                logger.warning(
+                    "failed to persist receipt for %r", receipt.run_id, exc_info=True
+                )
+        if self._receipt_ledger is not None:
+            try:
+                self._receipt_ledger.append(receipt)
+            except Exception:
+                logger.warning(
+                    "failed to anchor receipt for %r in the ledger",
+                    receipt.run_id,
+                    exc_info=True,
+                )
 
     def run_iteratively(
         self,

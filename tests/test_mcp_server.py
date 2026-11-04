@@ -39,8 +39,13 @@ def test_tools_are_listed_with_annotations(tmp_path) -> None:
         "get_run",
         "get_run_file",
         "get_artifact",
+        "get_receipt",
+        "verify_receipt",
+        "verify_ledger",
     }
     assert tools["get_run"].annotations.read_only_hint is True
+    for name in ("get_receipt", "verify_receipt", "verify_ledger"):
+        assert tools[name].annotations.read_only_hint is True
     assert tools["run_subgraph"].annotations.read_only_hint is False
     assert "prompt" in tools["run_subgraph"].input_schema["required"]
 
@@ -87,3 +92,27 @@ def test_registry_resource(tmp_path) -> None:
 
     body = json.loads(_run(main).contents[0].text)
     assert any(k["kind"] == "llm_call" for k in body["node_kinds"])
+
+
+def test_receipt_tools_round_trip(tmp_path) -> None:
+    async def main():
+        async with Client(_server(tmp_path)) as client:
+            await client.call_tool(
+                "run_subgraph", {"prompt": "compare A and B", "run_id": "mcp-rc"}
+            )
+            got = await client.call_tool("get_receipt", {"run_id": "mcp-rc"})
+            checked = await client.call_tool("verify_receipt", {"run_id": "mcp-rc"})
+            ledger = await client.call_tool("verify_ledger", {})
+            missing = await client.call_tool("get_receipt", {"run_id": "ghost"})
+            return got, checked, ledger, missing
+
+    got, checked, ledger, missing = _run(main)
+    assert not got.is_error
+    body = got.structured_content
+    assert body["receipt"]["status"] == "ok"
+    assert body["ledger"]["anchored"] is True and body["ledger"]["latest"] is True
+    assert checked.structured_content["ok"] is True
+    assert checked.structured_content["signature"] == "unsigned"
+    assert ledger.structured_content["ok"] is True
+    assert ledger.structured_content["entries"] == 1
+    assert missing.is_error

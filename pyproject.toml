@@ -42,6 +42,10 @@ dependencies = [
     "python-dotenv>=1.0",
 ]
 
+[project.scripts]
+# Audit CLI: verify receipts, the receipt ledger, and generate signing keys.
+ds = "app.cli:main"
+
 [project.optional-dependencies]
 api = ["fastapi>=0.136.3", "uvicorn[standard]>=0.48.0"]
 # MCP server (`python -m app.mcp`) exposing governed runs to MCP hosts.
@@ -51,6 +55,8 @@ anthropic = ["langchain-anthropic>=0.3.0"]
 ollama = ["langchain-ollama>=0.2.0"]
 # Automatic cost on RunResult via LiteLLM's maintained price map (no manual prices).
 cost = ["litellm>=1.0"]
+# Ed25519 receipt signing (HMAC-SHA256 signing needs no extra).
+signing = ["cryptography>=42"]
 all = [
     "fastapi>=0.136.3",
     "uvicorn[standard]>=0.48.0",
@@ -59,6 +65,7 @@ all = [
     "langchain-anthropic>=0.3.0",
     "langchain-ollama>=0.2.0",
     "litellm>=1.0",
+    "cryptography>=42",
 ]
 
 [project.urls]
@@ -139,6 +146,7 @@ files = [
     "app/registry",
     "app/governance",
     "app/mcp",
+    "app/cli.py",
 ]
 
 [[tool.mypy.overrides]]

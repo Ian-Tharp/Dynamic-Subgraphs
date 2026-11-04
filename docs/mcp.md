@@ -66,6 +66,9 @@ Claude Desktop (`claude_desktop_config.json`) or any host using the common
 | `get_run` | yes | Outcome, values, errors, config, readable files, and artifacts for a run. |
 | `get_run_file` | yes | One recorded file: `spec`, `output`, `trace`, `graph`, `summary`, `prompt`, `eval`, `receipt`. |
 | `get_artifact` | yes | A file written by an `emit_artifact` node. |
+| `get_receipt` | yes | A run's stored receipt plus its receipt-ledger entry and history (`supersedes` links a resumed receipt to the paused one). |
+| `verify_receipt` | yes | Re-check a run's receipt against its recorded files and the ledger: `ok`, `problems`, `signature` (`valid` / `invalid` / `unsigned` / `unchecked`), and whether it was issued under the unnarrowed host policy. |
+| `verify_ledger` | yes | Check the whole ledger: hash chain, `seq`, `supersedes` links, signatures. Returns `ok`, `problems`, `entries`, `signed`, `head`. |
 
 `run_subgraph` / `resume_run` / `replay_run` return:
 
@@ -88,6 +91,9 @@ Claude Desktop (`claude_desktop_config.json`) or any host using the common
   "receipt": {"status": "ok", "policy_hash": "...", "plan_hash": "...", "receipt_hash": "...", ...}  // sealed provenance receipt; see docs/governance.md
 }
 ```
+
+Outside the server, `ds verify --runs-dir <DS_RUNS_DIR>` checks the same runs and
+ledger offline (see [governance](./governance.md#ds-verify)).
 
 Long strings in `response` / `values` / `errors` are clipped to
 `DS_MCP_MAX_VALUE_CHARS` so results fit an agent's context. The full values stay
@@ -116,7 +122,8 @@ failure is recorded.
 | No clobbering | Client-supplied ids are validated (no path traversal) and must be new. Replays always write to a new id. Two calls can't run, replay into, or resume the same id at once. |
 | Stays governed on resume/replay | Resume and replay reuse the planner/model the run was created with, but only if the server still allows them, and replay re-validates the recorded plan against the **current** policy. |
 | Bounded reads | Run files are read from a fixed set of names; artifacts go through the recorder's path-safe lookup; reads are size-capped. |
-| Fail closed on config | A malformed `DS_*` value stops the server at startup instead of falling back to a looser default. |
+| Anchored receipts | Every persisted receipt is appended to a hash-chained receipt ledger (`<runs_dir>/.ledger/receipts.jsonl`), signed when a key is configured. `verify_receipt` flags a `receipt.json` that was rewritten and resealed, or rolled back to an older receipt. Run ids starting with `.` are refused so no run can claim the ledger's directory. |
+| Fail closed on config | A malformed `DS_*` value stops the server at startup instead of falling back to a looser default. A signing key that's too short or can't be loaded is a startup error too. |
 
 ## Configuration
 
@@ -142,6 +149,10 @@ configures both.
 | `DS_MCP_MAX_VALUE_CHARS` | `4000` | Per-string clip for values returned in tool results. |
 | `DS_MCP_TRANSPORT` | `stdio` | `stdio` or `streamable-http` (`--transport` overrides). |
 | `DS_MCP_HOST` / `DS_MCP_PORT` | `127.0.0.1` / `8765` | HTTP bind address (`--host` / `--port` override). |
+| `DS_RECEIPT_LEDGER` | `$DS_RUNS_DIR/.ledger/receipts.jsonl` | Receipt ledger path; `off` disables it. |
+| `DS_RECEIPT_HMAC_KEY` | unset | Sign ledger entries with HMAC-SHA256 (secret, >= 32 bytes). |
+| `DS_RECEIPT_ED25519_KEY_FILE` | unset | Sign ledger entries with this Ed25519 PEM private key (needs the `signing` extra; `ds keygen` makes one). Set at most one of the two keys. |
+| `DS_RECEIPT_KEY_ID` | `default` | Key id written on each signature. |
 
 ## Limits of this version
 

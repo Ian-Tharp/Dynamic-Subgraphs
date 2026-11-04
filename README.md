@@ -374,6 +374,20 @@ r.receipt.cost_bound    # worst case, next to r.receipt.cost_actual
 verify_receipt(r.receipt, f"runs/{r.receipt.recorder_run_id}", policy=policy).ok
 ```
 
+To make receipts hard to rewrite after the fact, anchor them in a hash-chained,
+signed ledger and audit the runs directory with the `ds` CLI:
+
+```python
+from dynamic_subgraphs import HmacSigner, ReceiptLedger
+
+ledger = ReceiptLedger.for_runs_dir("runs", signer=HmacSigner(secret))
+engine = DynamicSubgraphs(EngineConfig(..., recording=True, receipt_ledger=ledger))
+```
+
+```bash
+ds verify --hmac-key-env RECEIPT_KEY --require-signatures   # exit 0 = all verified
+```
+
 See [`docs/governance.md`](./docs/governance.md).
 
 ### Recording (opt-in)
@@ -431,7 +445,7 @@ result = engine.run(
 - [`docs/recipes.md`](./docs/recipes.md) — copy-pasteable SDK patterns (local models, hybrid, recording presets, debugging) + tested-model and latency tables.
 - [`docs/api-stability.md`](./docs/api-stability.md) — API stability & change policy: what counts as public, SemVer, deprecation, and how we keep changes non-breaking.
 - [`docs/evals/`](./docs/evals/) — eval reports (e.g. the gpt-5.4-nano vs claude-haiku-4-5 e2e comparison: latency / tokens / cost / quality, traced via LangSmith).
-- [`docs/governance.md`](./docs/governance.md) — plan policy gate, pre-flight cost bound, approved-subgraph catalog, provenance receipts.
+- [`docs/governance.md`](./docs/governance.md) — plan policy gate, pre-flight cost bound, approved-subgraph catalog, provenance receipts, receipt ledger, signing, `ds verify`.
 - [`docs/api.md`](./docs/api.md) — the HTTP surface over the supervisor (endpoints, modes, auth, examples).
 - [`docs/mcp.md`](./docs/mcp.md) — the MCP server: hand tasks from Claude, IDEs, or other agents to governed, recorded runs.
 - [`docs/dynamic-graphs-canonical-design-v1.md`](./docs/dynamic-graphs-canonical-design-v1.md) — canonical project design and source of truth.

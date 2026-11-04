@@ -58,13 +58,17 @@ from dynamic_subgraphs.eval import (
 )
 from dynamic_subgraphs.governance import (
     CostModel,
+    Ed25519Signer,
+    HmacSigner,
     ModelPrice,
     PlanGateReport,
     PolicyViolation,
     ProvenanceReceipt,
+    ReceiptLedger,
     SubgraphCatalog,
     TokenCap,
     check_plan_policy,
+    verify_ledger,
     verify_receipt,
 )
 from dynamic_subgraphs.recording import Artifact, Recording
@@ -95,6 +99,7 @@ __all__ = [
     "CostModel",
     "DeterministicEvalGate",
     "DynamicSubgraphs",
+    "Ed25519Signer",
     "EngineConfig",
     "EvalContext",
     "EvalCorpus",
@@ -103,6 +108,7 @@ __all__ = [
     "EvalResult",
     "EvalTags",
     "ExecutionPolicy",
+    "HmacSigner",
     "Model",
     "ModelPrice",
     "ModelRef",
@@ -112,6 +118,7 @@ __all__ = [
     "Planner",
     "PolicyViolation",
     "ProvenanceReceipt",
+    "ReceiptLedger",
     "Recording",
     "RouterLibrary",
     "RunFingerprint",
@@ -126,5 +133,6 @@ __all__ = [
     "check_plan_policy",
     "fill_spec",
     "run_benchmark",
+    "verify_ledger",
     "verify_receipt",
 ]

@@ -332,3 +332,117 @@ def test_server_info_reports_host_limits(tmp_path) -> None:
     info = _service(tmp_path, policy=ExecutionPolicy(max_nodes=4)).server_info()
     assert info["policy"]["max_nodes"] == 4
     assert info["llm_planner_available"] is False
+
+
+# ---------------------------------------------------------------- receipts
+
+
+def test_receipt_ledger_settings_from_env(tmp_path) -> None:
+    from app.governance import HmacSigner
+
+    s = McpSettings.from_env({"DS_RUNS_DIR": str(tmp_path)})
+    assert s.ledger_path() == tmp_path / ".ledger" / "receipts.jsonl"
+    assert s.receipt_signer is None
+    assert McpSettings.from_env({"DS_RECEIPT_LEDGER": "off"}).ledger_path() is None
+    custom = McpSettings.from_env({"DS_RECEIPT_LEDGER": str(tmp_path / "l.jsonl")})
+    assert custom.ledger_path() == tmp_path / "l.jsonl"
+
+    signed = McpSettings.from_env(
+        {"DS_RECEIPT_HMAC_KEY": "k" * 32, "DS_RECEIPT_KEY_ID": "2026"}
+    )
+    assert isinstance(signed.receipt_signer, HmacSigner)
+    assert signed.receipt_signer.key_id == "2026"
+    assert "k" * 32 not in repr(signed)
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"DS_RECEIPT_HMAC_KEY": "too-short"},
+        {"DS_RECEIPT_ED25519_KEY_FILE": "/nonexistent/key.pem"},
+        {"DS_RECEIPT_HMAC_KEY": "k" * 32, "DS_RECEIPT_ED25519_KEY_FILE": "x.pem"},
+    ],
+)
+def test_bad_signing_config_fails_closed(env) -> None:
+    with pytest.raises(ValueError):
+        McpSettings.from_env(env)
+
+
+def test_ed25519_key_file_from_env(tmp_path) -> None:
+    pytest.importorskip("cryptography")
+    from app.governance import Ed25519Signer
+
+    key = tmp_path / "k.pem"
+    key.write_bytes(Ed25519Signer.generate().private_pem())
+    s = McpSettings.from_env({"DS_RECEIPT_ED25519_KEY_FILE": str(key)})
+    assert isinstance(s.receipt_signer, Ed25519Signer)
+
+
+def test_runs_are_anchored_and_resume_chains_receipts(tmp_path) -> None:
+    from app.governance import HmacSigner
+
+    service = GovernedRunService(
+        McpSettings(runs_dir=str(tmp_path), receipt_signer=HmacSigner("k" * 32)),
+        supervisor_factory=_fixed_spec_factory(_wait_spec()),
+    )
+    paused = service.run("draft and wait", run_id="wait-1")
+    assert paused["status"] == "paused"
+    resumed = service.resume("wait-1", event={"approved": True})
+    assert resumed["status"] == "ok"
+
+    got = service.get_receipt("wait-1")
+    history = got["ledger"]["history"]
+    assert [e["status"] for e in history] == ["paused", "ok"]
+    assert history[0]["receipt_hash"] == paused["receipt"]["receipt_hash"]
+    assert history[1]["supersedes"] == paused["receipt"]["receipt_hash"]
+    assert got["ledger"]["latest"] is True
+    assert got["receipt"]["receipt_hash"] == resumed["receipt"]["receipt_hash"]
+
+    checked = service.verify_receipt("wait-1")
+    assert checked["ok"], checked["problems"]
+    assert checked["signature"] == "valid"
+    assert checked["policy"]["issued_under_host_policy"] is True
+
+    ledger = service.verify_ledger()
+    assert ledger["ok"] and ledger["entries"] == 2 and ledger["signed"] == 2
+    assert ledger["signing"] == {"alg": "hmac-sha256", "key_id": "default"}
+    info = service.server_info()
+    assert info["receipt_ledger"].endswith("receipts.jsonl")
+
+
+def test_verify_receipt_flags_tampering(tmp_path) -> None:
+    service = _service(tmp_path)
+    service.run("compare A and B", run_id="t1")
+    out = tmp_path / "t1" / "output.json"
+    data = json.loads(out.read_text())
+    data["status"] = "policy_denied"
+    out.write_text(json.dumps(data))
+    checked = service.verify_receipt("t1")
+    assert checked["ok"] is False
+    assert any("status mismatch" in p for p in checked["problems"])
+
+
+def test_narrowed_run_is_reported_not_flagged(tmp_path) -> None:
+    service = _service(tmp_path)
+    service.run("compare A and B", run_id="n1", max_nodes=6)
+    checked = service.verify_receipt("n1")
+    assert checked["ok"], checked["problems"]
+    assert checked["policy"]["issued_under_host_policy"] is False
+
+
+def test_ledger_can_be_disabled(tmp_path) -> None:
+    service = _service(tmp_path, receipt_ledger=None)
+    service.run("compare A and B", run_id="x1")
+    assert not (tmp_path / ".ledger").exists()
+    assert service.get_receipt("x1")["ledger"] == {"enabled": False}
+    assert service.verify_receipt("x1")["ok"]
+    with pytest.raises(GovernanceError, match="disabled"):
+        service.verify_ledger()
+
+
+def test_receipt_reads_refuse_unknown_runs_and_dot_ids(tmp_path) -> None:
+    service = _service(tmp_path)
+    with pytest.raises(NotFoundError):
+        service.get_receipt("ghost")
+    with pytest.raises(GovernanceError, match="start with"):
+        service.run("x", run_id=".ledger")
