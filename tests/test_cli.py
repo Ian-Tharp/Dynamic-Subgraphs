@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -136,7 +137,8 @@ def test_keygen_writes_a_usable_pair(tmp_path: Path) -> None:
         tmp_path / "receipts.pub.pem", key_id="2026"
     )
     assert verifier.verify(b"m", make_signature(signer, b"m"))
-    assert oct(key.stat().st_mode & 0o777) == "0o600"
+    if sys.platform != "win32":  # Windows has no POSIX mode bits
+        assert oct(key.stat().st_mode & 0o777) == "0o600"
     assert _ds("keygen", "--out", str(key))[0] == EXIT_USAGE  # no silent overwrite
 
 

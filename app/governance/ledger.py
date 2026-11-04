@@ -36,6 +36,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import sys
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -61,10 +62,10 @@ LEDGER_VERSION: Literal[1] = 1
 # (which needs spec.json) never lists it, and a run id can't silently reuse it.
 LEDGER_RELATIVE_PATH = Path(".ledger") / "receipts.jsonl"
 
-try:  # POSIX advisory locks; Windows falls back to the in-process lock.
+# POSIX advisory locks; Windows falls back to the in-process lock. A
+# sys.platform check (not try/import) so mypy narrows it on every OS.
+if sys.platform != "win32":
     import fcntl as _fcntl
-except ImportError:  # pragma: no cover - platform dependent
-    _fcntl = None  # type: ignore[assignment]
 
 _PATH_LOCKS: dict[str, threading.Lock] = {}
 _PATH_LOCKS_GUARD = threading.Lock()
@@ -215,17 +216,17 @@ class ReceiptLedger:
     @contextlib.contextmanager
     def _locked(self) -> Iterator[None]:
         with _path_lock(self._path):
-            if _fcntl is None:  # pragma: no cover - platform dependent
+            if sys.platform == "win32":  # pragma: no cover - platform dependent
                 yield
-                return
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            lock_path = self._path.with_name(self._path.name + ".lock")
-            with lock_path.open("a") as lock_fh:
-                _fcntl.flock(lock_fh.fileno(), _fcntl.LOCK_EX)
-                try:
-                    yield
-                finally:
-                    _fcntl.flock(lock_fh.fileno(), _fcntl.LOCK_UN)
+            else:
+                self._path.parent.mkdir(parents=True, exist_ok=True)
+                lock_path = self._path.with_name(self._path.name + ".lock")
+                with lock_path.open("a") as lock_fh:
+                    _fcntl.flock(lock_fh.fileno(), _fcntl.LOCK_EX)
+                    try:
+                        yield
+                    finally:
+                        _fcntl.flock(lock_fh.fileno(), _fcntl.LOCK_UN)
 
     # ------------------------------------------------------------------ read
 
